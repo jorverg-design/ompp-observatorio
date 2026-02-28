@@ -1,0 +1,152 @@
+[
+  [
+    "COSTILLA",
+    "Costilla vacuna",
+    "Carne",
+    "Gs/kg"
+  ],
+  [
+    "POLLO",
+    "Pollo entero",
+    "Alimentos",
+    "Gs/kg"
+  ],
+  [
+    "MOLIDA",
+    "Carne molida",
+    "Carne",
+    "Gs/kg"
+  ],
+  [
+    "HUEVOS",
+    "Huevos",
+    "Alimentos",
+    "Gs/docena"
+  ],
+  [
+    "LECHE",
+    "Leche entera",
+    "Lácteos",
+    "Gs/litro"
+  ],
+  [
+    "QUESO",
+    "Queso Paraguay",
+    "Lácteos",
+    "Gs/kg"
+  ],
+  [
+    "PAN",
+    "Pan",
+    "Harinas",
+    "Gs/kg"
+  ],
+  [
+    "HARINA",
+    "Harina",
+    "Harinas",
+    "Gs/kg"
+  ],
+  [
+    "FIDEOS",
+    "Fideos",
+    "Harinas",
+    "Gs/kg"
+  ],
+  [
+    "ARROZ",
+    "Arroz",
+    "Harinas",
+    "Gs/kg"
+  ],
+  [
+    "ACEITE",
+    "Aceite",
+    "Alimentos",
+    "Gs/litro"
+  ],
+  [
+    "AZUCAR",
+    "Azúcar",
+    "Alimentos",
+    "Gs/kg"
+  ],
+  [
+    "TOMATE",
+    "Tomate",
+    "Verduras",
+    "Gs/kg"
+  ],
+  [
+    "CEBOLLA",
+    "Cebolla",
+    "Verduras",
+    "Gs/kg"
+  ],
+  [
+    "PAPA",
+    "Papa",
+    "Verduras",
+    "Gs/kg"
+  ],
+  [
+    "SAL",
+    "Sal",
+    "Alimentos",
+    "Gs/kg"
+  ],
+  [
+    "YERBA",
+    "Yerba mate",
+    "Alimentos",
+    "Gs/kg"
+  ],
+  [
+    "GAS",
+    "Gas doméstico",
+    "Hogar",
+    "Gs/garrafa"
+  ],
+  [
+    "NAFTA",
+    "Nafta común",
+    "Movilidad",
+    "Gs/litro"
+  ],
+  [
+    "DIESEL",
+    "Diésel",
+    "Movilidad",
+    "Gs/litro"
+  ],
+  [
+    "PASAJE",
+    "Pasaje transporte público",
+    "Movilidad",
+    "Gs/viaje"
+  ],
+  [
+    "MOTO",
+    "Moto básica (proxy)",
+    "Bienes",
+    "Gs/unidad"
+  ],
+  [
+    "USD",
+    "USD/PGY (tipo de cambio)",
+    "Macro",
+    "Gs/USD"
+  ],
+  [
+    "SM",
+    "Salario mínimo",
+    "Macro",
+    "Gs/mes"
+  ],
+  [
+    "INF_ALIM",
+    "Inflación alimentos (BCP)",
+    "Macro",
+    "% mensual"
+  ]
+]

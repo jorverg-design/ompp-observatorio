@@ -1,0 +1,7 @@
+{
+  "nombre": "OMPP Sistema con Reporte Real",
+  "moneda": "Gs",
+  "frecuencia_base": "diaria",
+  "zona_default": "AMA",
+  "umbral_semana_dias": 7
+}

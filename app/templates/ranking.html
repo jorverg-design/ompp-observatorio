@@ -1,0 +1,29 @@
+<!doctype html><html lang="es"><head>
+<meta charset="utf-8"><title>OMPP — Ranking</title>
+<link rel="stylesheet" href="/static/style.css"></head><body>
+<div class="container">
+<h1>Ranking diario — {{ last }}</h1>
+<p class="muted">Top alzas y bajas vs día anterior (cuando hay datos).</p>
+<div class="actions">
+  <a class="btn secondary" href="/">Volver</a>
+</div>
+
+<div class="kpis" style="grid-template-columns:repeat(2,1fr);">
+  <div class="card">
+    <div class="k">Top alzas</div>
+    <ul>
+      {% for r in up %}
+      <li>{{ r.name }} — <b>{{ fmt_pct(r.change) }}</b> ({{ fmt_gs(r.value) }})</li>
+      {% endfor %}
+    </ul>
+  </div>
+  <div class="card">
+    <div class="k">Top bajas</div>
+    <ul>
+      {% for r in dn %}
+      <li>{{ r.name }} — <b>{{ fmt_pct(r.change) }}</b> ({{ fmt_gs(r.value) }})</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+</div></body></html>
