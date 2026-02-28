@@ -1,0 +1,41 @@
+{
+  "sistema_nombre": "OMPP Sistema con Reporte Real",
+  "whatsapp": {
+    "enabled": false,
+    "provider": "meta_cloud",
+    "test_mode": true,
+    "from_phone_id": "REEMPLAZAR_PHONE_NUMBER_ID",
+    "access_token": "REEMPLAZAR_TOKEN",
+    "template_name": "ompp_alerta",
+    "recipients": [
+      "+595981000000"
+    ]
+  },
+  "alert_rules": {
+    "DEFAULT": {
+      "daily_up": 0.08,
+      "daily_down": -0.06,
+      "weekly_up": 0.12,
+      "weekly_down": -0.1
+    },
+    "COSTILLA": {
+      "daily_up": 0.08,
+      "daily_down": -0.06,
+      "weekly_up": 0.12,
+      "weekly_down": -0.1
+    },
+    "NAFTA": {
+      "daily_up": 0.05
+    },
+    "DIESEL": {
+      "daily_up": 0.05
+    },
+    "PASAJE": {
+      "daily_up": 0.03
+    },
+    "CANASTA_INDEX": {
+      "daily_up": 0.02,
+      "weekly_up": 0.05
+    }
+  }
+}

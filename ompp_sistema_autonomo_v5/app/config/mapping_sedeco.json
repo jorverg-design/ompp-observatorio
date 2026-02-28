@@ -1,0 +1,9 @@
+{
+  "notes": "Mapear nombres del dataset SEDECO a códigos internos (ej: 'Carne vacuna costilla' -> 'COSTILLA')",
+  "name_to_code": {
+    "Costilla vacuna": "COSTILLA",
+    "Nafta común": "NAFTA",
+    "Diésel": "DIESEL",
+    "Pasaje transporte público": "PASAJE"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "sedeco_datos_gov": {
+    "enabled": true,
+    "mode": "download_csv",
+    "schedule": "03:00",
+    "url": "https://www.datos.gov.py/dataset/monitoreo-de-precios-canasta-familiar",
+    "notes": "Conector base: descarga CSV/Excel público y lo carga."
+  },
+  "petropar_combustibles": {
+    "enabled": true,
+    "mode": "scrape_html",
+    "schedule": "02:00",
+    "url": "https://www.petropar.gov.py/wp-content/price/index.html",
+    "notes": "Conector base: scrape HTML de precios vigentes (verificar selectores).",
+    "alt_url": "https://www.petropar.gov.py/?page_id=4460"
+  },
+  "bcp_ipc": {
+    "enabled": true,
+    "mode": "download_xls_pdf",
+    "schedule": "04:00",
+    "url": "https://www.bcp.gov.py/indice-precios-al-consumidor-ipc",
+    "notes": "Conector base: descarga anexos y extrae series.",
+    "alt_url": "https://www.bcp.gov.py/anexo-estadistico-del-informe-economico-i365"
+  }
+}

@@ -1,0 +1,22 @@
+
+
+INSTALACIÓN AUTOMÁTICA OMPP
+
+1 copiar acceso directo de:
+
+iniciar_servicio.bat
+
+a:
+
+Windows + R
+
+shell:startup
+
+
+El sistema iniciará automáticamente al prender la PC
+
+
+Luego abrir:
+
+http://localhost:8000
+
