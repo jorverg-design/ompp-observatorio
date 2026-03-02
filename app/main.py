@@ -69,6 +69,7 @@ CONS_CODES = [r[0] for r in fetch_products()[:18]]
 MOB_CODES = ["NAFTA","DIESEL","PASAJE"]
 
 def ensure_alerts_table():
+        pass
 
 def ensure_raw_table():
     con=db(); cur=con.cursor()
