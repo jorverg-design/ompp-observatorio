@@ -14,28 +14,68 @@
 </form>
 </div>
 {% if last %}
+
 <h2>Semana: {{ last }}</h2>
+
 <div class="kpis">
-  <div class="card"><div class="k">Índice Canasta</div><div class="v">{{ fmt_pct(m.index_canasta) }}</div><div class="s">Umbral: +2% semanal</div></div>
-  <div class="card"><div class="k">Índice Movilidad</div><div class="v">{{ fmt_pct(m.index_mobility) }}</div><div class="s">Umbral: +3% semanal</div></div>
-  <div class="card"><div class="k">Costilla (Gs/kg)</div><div class="v">{{ fmt_gs(m.costilla_avg) }}</div><div class="s">Variación semanal: {{ fmt_pct(m.costilla_weekly_change) }}</div></div>
+
+<div class="card">
+<div class="k">Índice Canasta</div>
+<div class="v">{{ fmt_pct(m.index_canasta) }}</div>
 </div>
+
+<div class="card">
+<div class="k">Índice Movilidad</div>
+<div class="v">{{ fmt_pct(m.index_mobility) }}</div>
+</div>
+
+<div class="card">
+<div class="k">Costilla (Gs/kg)</div>
+<div class="v">{{ fmt_gs(m.costilla_avg) }}</div>
+<div class="s">Variación semanal: {{ fmt_pct(m.costilla_weekly_change) }}</div>
+</div>
+
+</div>
+
+
 <h3>Semáforos</h3>
+
 {% if m.alerts and m.alerts|length > 0 %}
-<ul>{% for a in m.alerts %}<li>{{ a.msg }}</li>{% endfor %}</ul>
-{% else %}<p>Sin alertas relevantes.</p>{% endif %}
-<div class="actions">
-<a class="btn secondary" href="/ranking">Ver Ranking</a>
-<a class="btn" href="/reporte/pdf_real?obs_date={{ last }}">Reporte Real (PDF)</a>
-        <a class="btn secondary" href="/reporte/pptx?obs_date={{ last }}">Reporte Real (PPT)</a>
-        <a class="btn secondary" href="/reporte/pdf_ext?week_date={{ last }}">Reporte Institucional Extendido (PDF)</a>
-        <a class="btn secondary" href="/reporte/pdf_ext?week_date={{ last }}">Reporte Institucional Extendido (PDF)</a>
-        <a class="btn secondary" href="/reporte/ppt_json?week_date={{ last }}">Ver JSON para PPT</a>
-      </div>
-    {% else %}</a>
-<a class="btn secondary" href="/reporte/ppt_json?week_date={{ last }}">Ver JSON para PPT</a>
-</div>
+
+<ul>
+{% for a in m.alerts %}
+<li>{{ a.msg }}</li>
+{% endfor %}
+</ul>
+
 {% else %}
-<p>No hay datos cargados todavía. Entrá a “Cargar datos semanales” o importá el Excel.</p>
+
+<p>Sin alertas relevantes.</p>
+
 {% endif %}
-</div></body></html>
+
+
+<div class="actions">
+
+<a class="btn secondary" href="/ranking">Ver Ranking</a>
+
+<a class="btn" href="/reporte/pdf_real?obs_date={{ last }}">
+Reporte Real (PDF)
+</a>
+
+<a class="btn secondary" href="/reporte/pptx?obs_date={{ last }}">
+Reporte Real (PPT)
+</a>
+
+</div>
+
+
+{% else %}
+
+<p>No hay datos cargados todavía.</p>
+
+{% endif %}
+</div>
+
+</body>
+</html>
