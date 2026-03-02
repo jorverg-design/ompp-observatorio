@@ -79,6 +79,80 @@ def ensure_raw_table():
 def startup():
     ensure_raw_table()
 
+import os
+import requests
+
+@app.get("/jobs/import_daily")
+def import_daily(token: str):
+
+    if token != os.environ.get("JOB_TOKEN"):
+        return {"ok": False, "error": "Unauthorized"}
+
+    data_url = os.environ.get("DATA_URL")
+    if not data_url:
+        return {"ok": False, "error": "DATA_URL not configured"}
+
+    tmp = os.path.join(BASE_DIR, "_auto.xlsx")
+
+    try:
+        r = requests.get(data_url, timeout=60)
+        r.raise_for_status()
+
+        with open(tmp, "wb") as f:
+            f.write(r.content)
+
+        wb = load_workbook(tmp, data_only=True)
+        if "Canasta_25" not in wb.sheetnames:
+            return {"ok": False, "error": "Hoja Canasta_25 no encontrada"}
+
+        sh = wb["Canasta_25"]
+
+        headers = {}
+        for col in range(2, 2 + 25):
+            headers[col] = sh.cell(row=6, column=col).value
+
+        prods = fetch_products()
+        name_to_code = {n.strip(): c for c, n, _, _ in prods}
+
+        for rr in range(8, 8 + 80):
+            wd = sh.cell(row=rr, column=1).value
+            if not wd:
+                continue
+
+            if isinstance(wd, datetime.datetime):
+                wd = wd.date()
+
+            if isinstance(wd, datetime.date):
+                week_date = wd.isoformat()
+            else:
+                week_date = str(wd)[:10]
+
+            for col, nm in headers.items():
+                if nm is None:
+                    continue
+                nm = str(nm).strip()
+
+                if nm not in name_to_code:
+                    continue
+
+                val = sh.cell(row=rr, column=col).value
+                if val is None:
+                    continue
+
+                code = name_to_code[nm]
+
+                if code == "INF_ALIM" and val > 1:
+                    val = val / 100.0
+
+                upsert_obs(code, week_date, val, source="AutoSheet")
+
+            compute_date(week_date)
+
+        return {"ok": True}
+
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 def fetch_products():
     con = db()
     cur = con.cursor()
@@ -89,24 +163,6 @@ def fetch_products():
 
 CONS_CODES = []
 MOB_CODES = ["NAFTA", "DIESEL", "PASAJE"]
-
-def ensure_raw_table():
-    con = db()
-    cur = con.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS raw_source_files(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT NOT NULL,
-            source_key TEXT NOT NULL,
-            url TEXT,
-            fetched_at TEXT NOT NULL,
-            sha256 TEXT NOT NULL,
-            file_path TEXT NOT NULL
-        )
-    """)
-    con.commit()
-    con.close()
-
 
 def upsert_obs(code, week_date, value, geo="AMA", source="Relevamiento"):
     con=db(); cur=con.cursor()
