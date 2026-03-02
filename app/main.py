@@ -86,26 +86,6 @@ def ensure_raw_table():
 
 ensure_raw_table()
 
-    con=db(); cur=con.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS alerts_events(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        created_at TEXT NOT NULL,
-        obs_date TEXT NOT NULL,
-        product_code TEXT,
-        scope TEXT NOT NULL,
-        level TEXT NOT NULL,
-        metric TEXT NOT NULL,
-        value REAL,
-        change_value REAL,
-        source TEXT,
-        message TEXT NOT NULL,
-        whatsapp_sent INTEGER DEFAULT 0
-    )""")
-    con.commit(); con.close()
-
-ensure_alerts_table()
-
-
 def upsert_obs(code, week_date, value, geo="AMA", source="Relevamiento"):
     con=db(); cur=con.cursor()
     cur.execute(
