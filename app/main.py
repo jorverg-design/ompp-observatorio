@@ -65,7 +65,7 @@ def fetch_products():
     rows=cur.fetchall(); con.close()
     return rows
 
-CONS_CODES = [r[0] for r in fetch_products()[:18]]
+CONS_CODES = []
 MOB_CODES = ["NAFTA","DIESEL","PASAJE"]
 
 def ensure_raw_table():
