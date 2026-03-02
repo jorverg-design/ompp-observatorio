@@ -69,20 +69,21 @@ CONS_CODES = [r[0] for r in fetch_products()[:18]]
 MOB_CODES = ["NAFTA","DIESEL","PASAJE"]
 
 def ensure_raw_table():
-    pass
-
-def ensure_raw_table():
-    con=db(); cur=con.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS raw_source_files(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        created_at TEXT NOT NULL,
-        source_key TEXT NOT NULL,
-        url TEXT,
-        fetched_at TEXT NOT NULL,
-        sha256 TEXT NOT NULL,
-        file_path TEXT NOT NULL
-    )""")
-    con.commit(); con.close()
+    con = db()
+    cur = con.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS raw_source_files(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            url TEXT,
+            fetched_at TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            file_path TEXT NOT NULL
+        )
+    """)
+    con.commit()
+    con.close()
 
 ensure_raw_table()
 
