@@ -7,10 +7,10 @@ reportlab==4.2.2
 requests==2.32.3
 beautifulsoup4==4.12.3
 apscheduler==3.10.4
-pandas==2.2.2
+pandas==2.1.4
 python-pptx==1.0.2
 matplotlib==3.9.2
-numpy==2.1.1
+numpy==1.26.4
 
 apscheduler==3.10.4
 psutil==5.9.8
