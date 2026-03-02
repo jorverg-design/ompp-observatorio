@@ -254,6 +254,10 @@ def fmt_pct(x):
 def fmt_gs(x):
     return "" if x is None else f"{int(round(x)):,}".replace(",", ".")
 
+@app.get("/health")
+def health():
+    return {"ok": True}
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     weeks = latest_weeks(12)
