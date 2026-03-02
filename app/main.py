@@ -12,7 +12,7 @@ import numpy as np
 from reportlab.lib.units import cm
 import textwrap
 
-BASE_DIR = os.path.dirname(__file__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "ompp.sqlite")
 TPL_DIR = os.path.join(BASE_DIR, "templates")
 
@@ -52,21 +52,11 @@ def whatsapp_send(msg: str):
         f.write(f"[{stamp}] TO={cfg.get('recipients',[])} :: {msg}\n")
     return {"sent": True, "mode": "test_log" if cfg.get("test_mode", True) else "configured"}
 
-
 app = FastAPI(title="OMPP Sistema con Reporte Real")
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 def db():
     return sqlite3.connect(DB_PATH)
-
-def fetch_products():
-    con=db(); cur=con.cursor()
-    cur.execute("SELECT code,name,category,unit FROM products ORDER BY id")
-    rows=cur.fetchall(); con.close()
-    return rows
-
-CONS_CODES = []
-MOB_CODES = ["NAFTA","DIESEL","PASAJE"]
 
 def ensure_raw_table():
     con = db()
@@ -85,7 +75,38 @@ def ensure_raw_table():
     con.commit()
     con.close()
 
-ensure_raw_table()
+@app.on_event("startup")
+def startup():
+    ensure_raw_table()
+
+def fetch_products():
+    con = db()
+    cur = con.cursor()
+    cur.execute("SELECT code,name,category,unit FROM products ORDER BY id")
+    rows = cur.fetchall()
+    con.close()
+    return rows
+
+CONS_CODES = []
+MOB_CODES = ["NAFTA", "DIESEL", "PASAJE"]
+
+def ensure_raw_table():
+    con = db()
+    cur = con.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS raw_source_files(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            url TEXT,
+            fetched_at TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            file_path TEXT NOT NULL
+        )
+    """)
+    con.commit()
+    con.close()
+
 
 def upsert_obs(code, week_date, value, geo="AMA", source="Relevamiento"):
     con=db(); cur=con.cursor()
