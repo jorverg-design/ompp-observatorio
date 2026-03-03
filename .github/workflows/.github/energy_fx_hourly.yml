@@ -1,1 +1,14 @@
+name: Hourly Energy FX
 
+on:
+  schedule:
+    - cron: "0 * * * *"   # cada hora (UTC)
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Railway Energy FX
+        run: |
+          curl -fsS "https://adorable-blessing-production.up.railway.app/jobs/energy_fx?token=${{ secrets.JOB_TOKEN }}"
