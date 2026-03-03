@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from reportlab.lib.units import cm
 import textwrap
+from energy_fx import main as energy_fx_main
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "ompp.sqlite")
@@ -336,6 +337,17 @@ def carga(request: Request):
     products = fetch_products()
     tpl=env.get_template("carga.html")
     return tpl.render(products=products)
+
+@app.get("/jobs/energy_fx")
+def job_energy_fx(token: str = ""):
+    if token != os.getenv("JOB_TOKEN", ""):
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+
+    try:
+        energy_fx_main()
+        return {"ok": True}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 @app.post("/carga")
 def carga_post(week_date: str = Form(...), geo: str = Form("AMA"), source: str = Form("Relevamiento"), data_json: str = Form(...)):
