@@ -2,7 +2,7 @@ name: Hourly Energy FX
 
 on:
   schedule:
-    - cron: "0 * * * *"   # cada hora (UTC)
+    - cron: "*/30 * * * *"   # cada 30 minutos (UTC)
   workflow_dispatch:
 
 jobs:
