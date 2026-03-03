@@ -1,18 +1,31 @@
-<!doctype html><html lang="es"><head>
-<meta charset="utf-8"><title>OMPP — Dashboard</title>
-<link rel="stylesheet" href="/static/style.css"></head><body>
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>OMPP — Dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
 <div class="container">
+
 <h1>OMPP Sistema con Reporte Real — Dashboard</h1>
 <p class="muted">Sistema (v1). Carga semanal + reporte PDF estilo institucional.</p>
+
 <div class="actions">
 <a class="btn secondary" href="/ranking">Ver Ranking</a>
 <a class="btn" href="/carga">Cargar datos semanales</a>
+
 <form class="inline" action="/import_excel" method="post" enctype="multipart/form-data">
   <input type="file" name="file" accept=".xlsx" required>
   <input type="hidden" name="source" value="Excel">
   <button class="btn secondary" type="submit">Importar Excel (Canasta_25)</button>
 </form>
+
 </div>
+
+
 {% if last %}
 
 <h2>Semana: {{ last }}</h2>
@@ -35,6 +48,33 @@
 <div class="s">Variación semanal: {{ fmt_pct(m.costilla_weekly_change) }}</div>
 </div>
 
+<div class="card">
+<div class="k">USD / PYG</div>
+
+{% if usd_value %}
+
+<div class="v">{{ fmt_gs(usd_value) }}</div>
+
+<div class="s">
+Variación 24h:
+
+{% if usd_change_24h %}
+{{ "%.2f"|format(usd_change_24h) }}%
+{% else %}
+—
+{% endif %}
+
+</div>
+
+{% else %}
+
+<div class="v">—</div>
+<div class="s">Sin datos</div>
+
+{% endif %}
+
+</div>
+
 </div>
 
 
@@ -43,9 +83,11 @@
 {% if m.alerts and m.alerts|length > 0 %}
 
 <ul>
+
 {% for a in m.alerts %}
 <li>{{ a.msg }}</li>
 {% endfor %}
+
 </ul>
 
 {% else %}
@@ -57,7 +99,9 @@
 
 <div class="actions">
 
-<a class="btn secondary" href="/ranking">Ver Ranking</a>
+<a class="btn secondary" href="/ranking">
+Ver Ranking
+</a>
 
 <a class="btn" href="/reporte/pdf_real?obs_date={{ last }}">
 Reporte Real (PDF)
@@ -76,6 +120,7 @@ Reporte Real (PPT)
 
 {% endif %}
 
+</div>
 
 </body>
 </html>
