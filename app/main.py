@@ -57,13 +57,12 @@ app = FastAPI(title="OMPP Sistema con Reporte Real")
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 def get_last_external(series: str):
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
+    con = db(); cur = con.cursor()
     cur.execute("""
         SELECT obs_date, value
         FROM external_series
         WHERE series = ?
-        ORDER BY obs_date DESC, id DESC
+        ORDER BY obs_date DESC
         LIMIT 1
     """, (series,))
     row = cur.fetchone()
@@ -71,18 +70,17 @@ def get_last_external(series: str):
     return row  # (obs_date, value) o None
 
 def get_external_by_date(series: str, obs_date: str):
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
+    con = db(); cur = con.cursor()
     cur.execute("""
         SELECT value
         FROM external_series
         WHERE series = ? AND obs_date = ?
-        ORDER BY id DESC
+        ORDER BY obs_date DESC
         LIMIT 1
     """, (series, obs_date))
     row = cur.fetchone()
     con.close()
-    return row[0] if row else None
+    return float(row[0]) if row else None
 
 def pct_change(curr, prev):
     if curr is None or prev is None or prev == 0:
