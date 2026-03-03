@@ -56,6 +56,50 @@ def whatsapp_send(msg: str):
 app = FastAPI(title="OMPP Sistema con Reporte Real")
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
+def get_last_external(series: str):
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("""
+        SELECT obs_date, value
+        FROM external_series
+        WHERE series = ?
+        ORDER BY obs_date DESC, id DESC
+        LIMIT 1
+    """, (series,))
+    row = cur.fetchone()
+    con.close()
+    return row  # (obs_date, value) o None
+
+def get_external_by_date(series: str, obs_date: str):
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("""
+        SELECT value
+        FROM external_series
+        WHERE series = ? AND obs_date = ?
+        ORDER BY id DESC
+        LIMIT 1
+    """, (series, obs_date))
+    row = cur.fetchone()
+    con.close()
+    return row[0] if row else None
+
+def pct_change(curr, prev):
+    if curr is None or prev is None or prev == 0:
+        return None
+    return (curr / prev - 1.0) * 100.0
+
+def semaforo_pct(p):
+    # p = % cambio (ej: 1.2)
+    if p is None:
+        return ("GRIS", "Sin dato")
+    a = abs(p)
+    if a >= 2.0:
+        return ("ROJO", "Alerta")
+    if a >= 1.0:
+        return ("AMARILLO", "Vigilancia")
+    return ("VERDE", "Normal")
+
 def db():
     return sqlite3.connect(DB_PATH)
 
@@ -181,7 +225,6 @@ def week_values(week_date):
     cur.execute("SELECT product_code,value FROM observations WHERE week_date=?", (week_date,))
     d={k:v for k,v in cur.fetchall()}
     con.close(); return d
-
 
 def compute_date(obs_date: str):
     """
@@ -320,16 +363,42 @@ def home(request: Request):
     weeks = latest_weeks(12)
     last = weeks[-1] if weeks else None
     metrics = compute_date(last) if last else None
-    tpl=env.get_template("dashboard.html")
-    return tpl.render(weeks=weeks, last=last, m=metrics, fmt_pct=fmt_pct, fmt_gs=fmt_gs)
 
+    # --- Panel Externo: USD/PYG (último) + variación 24h + semáforo ---
+    usd_last = get_last_external("USD_PYG")
+    usd_date, usd_value = (usd_last[0], float(usd_last[1])) if usd_last else (None, None)
+
+    usd_prev_value = None
+    usd_change_24h = None
+    usd_semaforo = ("GRIS", "Sin dato")
+
+    if usd_date and usd_value is not None:
+        from datetime import date, timedelta
+        y = (date.fromisoformat(usd_date) - timedelta(days=1)).isoformat()
+        usd_prev_value = get_external_by_date("USD_PYG", y)
+        usd_change_24h = pct_change(usd_value, usd_prev_value)
+        usd_semaforo = semaforo_pct(usd_change_24h)
+
+    tpl = env.get_template("dashboard.html")
+    return tpl.render(
+        weeks=weeks,
+        last=last,
+        m=metrics,
+        fmt_pct=fmt_pct,
+        fmt_gs=fmt_gs,
+        usd_date=usd_date,
+        usd_value=usd_value,
+        usd_prev_value=usd_prev_value,
+        usd_change_24h=usd_change_24h,
+        usd_semaforo=usd_semaforo
+    )
 
 @app.get("/ranking", response_class=HTMLResponse)
 def ranking_page(request: Request, obs_date: str = None):
     weeks = latest_weeks(30)
     last = obs_date or (weeks[-1] if weeks else None)
     up, dn = top_movers(last, k=10) if last else ([],[])
-    tpl=env.get_template("ranking.html")
+    tpl = env.get_template("ranking.html")
     return tpl.render(last=last, weeks=weeks, up=up, dn=dn, fmt_pct=fmt_pct, fmt_gs=fmt_gs)
 
 @app.get("/carga", response_class=HTMLResponse)
