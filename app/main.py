@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from reportlab.lib.units import cm
 import textwrap
-from energy_fx import main as energy_fx_main
+from energy_fx import energy_fx_main
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "ompp.sqlite")
