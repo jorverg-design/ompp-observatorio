@@ -83,9 +83,11 @@ def get_external_by_date(series: str, obs_date: str):
     return float(row[0]) if row else None
 
 def pct_change(curr, prev):
-    if curr is None or prev is None or prev == 0:
+    if curr is None or prev is None:
         return None
-    return (curr / prev - 1.0) * 100.0
+    if prev == 0:
+        return None
+    return (curr - prev) / prev
 
 def semaforo_pct(p):
     # p = % cambio (ej: 1.2)
