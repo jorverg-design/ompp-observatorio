@@ -82,7 +82,7 @@ def energy_fx_main():
     print("ENERGY FX V2 RUNNING")
     ensure_tables()
     fetch_usd_pyg()
-    print("USD updated successfully")
+    print("USD updated successfully — ENERGY_FX_V2")
 
 
 if __name__ == "__main__":
