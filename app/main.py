@@ -360,7 +360,7 @@ def fmt_gs(x):
 def health():
     return {"ok": True}
 
-    @app.get("/debug/external")
+@app.get("/debug/external")
 def debug_external():
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
