@@ -355,6 +355,45 @@ def fmt_gs(x):
 @app.get("/health")
 def health():
     return {"ok": True}
+@app.get("/debug/external")
+def debug_external():
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT series, obs_date, value, source
+        FROM external_series
+        ORDER BY obs_date DESC
+        LIMIT 20
+    """)
+
+    rows = cur.fetchall()
+    con.close()
+
+    return {
+        "count": len(rows),
+        "data": rows
+    }
+
+@app.get("/debug/external")
+def debug_external():
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT series, obs_date, value, source
+        FROM external_series
+        ORDER BY obs_date DESC
+        LIMIT 20
+    """)
+
+    rows = cur.fetchall()
+    con.close()
+
+    return {
+        "count": len(rows),
+        "data": rows
+    }
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
