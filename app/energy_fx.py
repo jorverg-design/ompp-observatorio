@@ -79,6 +79,7 @@ def fetch_usd_pyg():
 
 
 def energy_fx_main():
+    print("ENERGY FX V2 RUNNING")
     ensure_tables()
     fetch_usd_pyg()
     print("USD updated successfully")
