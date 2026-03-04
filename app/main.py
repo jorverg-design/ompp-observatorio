@@ -360,24 +360,25 @@ def fmt_gs(x):
 def health():
     return {"ok": True}
 
-@app.get("/debug/external")
+    @app.get("/debug/external")
 def debug_external():
-    try:
-        # usa la misma conexión que tu sistema (db()), evita DB_PATH desalineado
-        con = db()
-        cur = con.cursor()
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
 
-        cur.execute("""
-            SELECT series, obs_date, value, source
-            FROM external_series
-            ORDER BY obs_date DESC
-            LIMIT 50
-        """)
+    cur.execute("""
+        SELECT series, obs_date, value, source
+        FROM external_series
+        ORDER BY obs_date DESC
+        LIMIT 20
+    """)
 
-        rows = cur.fetchall()
-        con.close()
+    rows = cur.fetchall()
+    con.close()
 
-        return {"ok": True, "count": len(rows), "data": rows}
+    return {
+        "count": len(rows),
+        "data": rows
+    }
 
     except Exception as e:
         # si falla, te muestra el motivo exacto en JSON
