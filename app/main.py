@@ -83,8 +83,10 @@ def get_external_by_date(series: str, obs_date: str):
     return float(row[0]) if row else None
 
 def pct_change(curr, prev):
+    # Si falta alguno de los dos, no hay variación calculable
     if curr is None or prev is None:
         return None
+    # Evita división por cero
     if prev == 0:
         return None
     return (curr - prev) / prev
@@ -484,8 +486,6 @@ def import_excel(file: UploadFile = File(...), source: str = Form("Excel")):
             upsert_obs(code, week_date, val, source=source)
         compute_date(week_date)
     return RedirectResponse("/", status_code=303)
-
-
 
 def top_movers(obs_date: str, scope_codes=None, k: int = 10):
     """
