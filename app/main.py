@@ -351,34 +351,38 @@ def latest_weeks(limit=30):
     con.close()
     return list(reversed(weeks))
 
-def fmt_pct(x): 
-    return "" if x is None else f"{x*100:.1f}%"
-def fmt_gs(x):
-    return "" if x is None else f"{int(round(x)):,}".replace(",", ".")
 
 @app.get("/health")
 def health():
     return {"ok": True}
-
-    return runner.run(main)
 
 @app.get("/debug/external")
 def debug_external():
     try:
         con = db()
         cur = con.cursor()
+
         cur.execute("""
             SELECT series, obs_date, value, source
             FROM external_series
             ORDER BY obs_date DESC
             LIMIT 50
         """)
+
         rows = cur.fetchall()
         con.close()
-        return {"ok": True, "count": len(rows), "data": rows}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+        return {
+            "ok": True,
+            "count": len(rows),
+            "data": rows
+        }
+
+    except Exception as e:
+        return JSONResponse(
+            {"ok": False, "error": str(e)},
+            status_code=500
+        )
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
