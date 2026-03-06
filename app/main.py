@@ -54,16 +54,14 @@ def whatsapp_send(msg: str):
     return {"sent": True, "mode": "test_log" if cfg.get("test_mode", True) else "configured"}
 
 app = FastAPI(title="OMPP Sistema con Reporte Real")
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
-app.mount(
-    "/static",
-    StaticFiles(directory=os.path.join(BASE_DIR, "static")),
-    name="static"
-)
 
-# -------------------------------------------------
-# Asegurar tabla de indicadores externos
-# -------------------------------------------------
+def db():
+    return sqlite3.connect(DB_PATH)
+
+
+def ensure_external_table():
     con = db()
     cur = con.cursor()
 
@@ -82,18 +80,12 @@ app.mount(
     con.close()
 
 
-# ejecutar al iniciar el servidor
+# crear tabla al iniciar
 ensure_external_table()
 
 
-# -------------------------------------------------
-# Obtener último dato externo
-# -------------------------------------------------
-
 def get_last_external(series: str):
-
     try:
-
         con = db()
         cur = con.cursor()
 
@@ -106,289 +98,59 @@ def get_last_external(series: str):
         """, (series,))
 
         row = cur.fetchone()
-
         con.close()
-
         return row
 
     except Exception:
-
         return None
+
 
 def get_external_by_date(series: str, obs_date: str):
-    con = db(); cur = con.cursor()
-    cur.execute("""
-        SELECT value
-        FROM external_series
-        WHERE series = ? AND obs_date = ?
-        ORDER BY obs_date DESC
-        LIMIT 1
-    """, (series, obs_date))
-    row = cur.fetchone()
-    con.close()
-    return float(row[0]) if row else None
+    try:
+        con = db()
+        cur = con.cursor()
+
+        cur.execute("""
+            SELECT value
+            FROM external_series
+            WHERE series=? AND obs_date=?
+            ORDER BY obs_date DESC
+            LIMIT 1
+        """, (series, obs_date))
+
+        row = cur.fetchone()
+        con.close()
+        return float(row[0]) if row else None
+
+    except Exception:
+        return None
+
 
 def pct_change(curr, prev):
-    # Si falta alguno de los dos, no hay variación calculable
     if curr is None or prev is None:
         return None
-    # Evita división por cero
     if prev == 0:
         return None
     return (curr - prev) / prev
 
+
 def semaforo_pct(p):
-    # p = % cambio (ej: 1.2)
     if p is None:
         return ("GRIS", "Sin dato")
     a = abs(p)
-    if a >= 2.0:
+    if a >= 0.05:
         return ("ROJO", "Alerta")
-    if a >= 1.0:
+    if a >= 0.02:
         return ("AMARILLO", "Vigilancia")
     return ("VERDE", "Normal")
 
-def db():
-    return sqlite3.connect(DB_PATH)
-# asegurar tabla de indicadores externos
-ensure_external_table()
 
-def ensure_raw_table():
-    con = db()
-    cur = con.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS raw_source_files(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT NOT NULL,
-            source_key TEXT NOT NULL,
-            url TEXT,
-            fetched_at TEXT NOT NULL,
-            sha256 TEXT NOT NULL,
-            file_path TEXT NOT NULL
-        )
-    """)
-    con.commit()
-    con.close()
+def fmt_pct(x):
+    return "" if x is None else f"{x*100:.1f}%"
 
-@app.on_event("startup")
-def startup():
-    ensure_raw_table()
 
-import os
-import requests
-
-@app.get("/jobs/import_daily")
-def import_daily(token: str):
-
-    if token != os.environ.get("JOB_TOKEN"):
-        return {"ok": False, "error": "Unauthorized"}
-
-    data_url = os.environ.get("DATA_URL")
-    if not data_url:
-        return {"ok": False, "error": "DATA_URL not configured"}
-
-    tmp = os.path.join(BASE_DIR, "_auto.xlsx")
-
-    try:
-        r = requests.get(data_url, timeout=60)
-        r.raise_for_status()
-
-        with open(tmp, "wb") as f:
-            f.write(r.content)
-
-        wb = load_workbook(tmp, data_only=True)
-        if "Canasta_25" not in wb.sheetnames:
-            return {"ok": False, "error": "Hoja Canasta_25 no encontrada"}
-
-        sh = wb["Canasta_25"]
-
-        headers = {}
-        for col in range(2, 2 + 25):
-            headers[col] = sh.cell(row=6, column=col).value
-
-        prods = fetch_products()
-        name_to_code = {n.strip(): c for c, n, _, _ in prods}
-
-        for rr in range(8, 8 + 80):
-            wd = sh.cell(row=rr, column=1).value
-            if not wd:
-                continue
-
-            if isinstance(wd, datetime.datetime):
-                wd = wd.date()
-
-            if isinstance(wd, datetime.date):
-                week_date = wd.isoformat()
-            else:
-                week_date = str(wd)[:10]
-
-            for col, nm in headers.items():
-                if nm is None:
-                    continue
-                nm = str(nm).strip()
-
-                if nm not in name_to_code:
-                    continue
-
-                val = sh.cell(row=rr, column=col).value
-                if val is None:
-                    continue
-
-                code = name_to_code[nm]
-
-                if code == "INF_ALIM" and val > 1:
-                    val = val / 100.0
-
-                upsert_obs(code, week_date, val, source="AutoSheet")
-
-            compute_date(week_date)
-
-        return {"ok": True}
-
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-def fetch_products():
-    con = db()
-    cur = con.cursor()
-    cur.execute("SELECT code,name,category,unit FROM products ORDER BY id")
-    rows = cur.fetchall()
-    con.close()
-    return rows
-
-CONS_CODES = []
-MOB_CODES = ["NAFTA", "DIESEL", "PASAJE"]
-
-def upsert_obs(code, week_date, value, geo="AMA", source="Relevamiento"):
-    con=db(); cur=con.cursor()
-    cur.execute(
-        """INSERT INTO observations(product_code,week_date,value,geo,source,created_at)
-           VALUES (?,?,?,?,?,?)
-           ON CONFLICT(product_code,week_date,geo,source) DO UPDATE SET
-             value=excluded.value, created_at=excluded.created_at""",
-        (code, week_date, float(value), geo, source, datetime.datetime.utcnow().isoformat())
-    )
-    con.commit(); con.close()
-
-def week_values(week_date):
-    con=db(); cur=con.cursor()
-    cur.execute("SELECT product_code,value FROM observations WHERE week_date=?", (week_date,))
-    d={k:v for k,v in cur.fetchall()}
-    con.close(); return d
-
-def compute_date(obs_date: str):
-    """
-    Computa métricas para una fecha (diaria) y su referencia semanal (7 días).
-    daily: vs día anterior | weekly: vs 7 días atrás
-    """
-    d0 = datetime.date.fromisoformat(obs_date)
-    d1 = (d0 - datetime.timedelta(days=1)).isoformat()
-    d7 = (d0 - datetime.timedelta(days=7)).isoformat()
-
-    now = week_values(obs_date)
-    prev1 = week_values(d1)
-    prev7 = week_values(d7)
-
-    def avg_change(codes, prev_dict):
-        ch=[]
-        for c in codes:
-            a=now.get(c); b=prev_dict.get(c)
-            if a is None or b in (None,0):
-                continue
-            ch.append(a/b-1.0)
-        return sum(ch)/len(ch) if ch else None
-
-    idx_can_d = avg_change(CONS_CODES, prev1)
-    idx_can_w = avg_change(CONS_CODES, prev7)
-    idx_mob_d = avg_change(MOB_CODES, prev1)
-    idx_mob_w = avg_change(MOB_CODES, prev7)
-
-    cost = now.get("COSTILLA")
-    cost_d = None
-    cost_w = None
-    if cost is not None and prev1.get("COSTILLA") not in (None,0):
-        cost_d = cost/prev1["COSTILLA"]-1.0
-    if cost is not None and prev7.get("COSTILLA") not in (None,0):
-        cost_w = cost/prev7["COSTILLA"]-1.0
-
-    # --- Alerts engine (parametrizado) ---
-    cfg = get_alertas()
-    rules = cfg.get("alert_rules", {})
-    def rule_for(code):
-        base = rules.get("DEFAULT", {})
-        specific = rules.get(code, {})
-        merged = dict(base); merged.update(specific)
-        return merged
-
-    alerts=[]
-    def add_alert(scope, code, level, metric, value, change, source, msg):
-        alerts.append({"scope":scope,"code":code,"level":level,"metric":metric,"value":value,"change":change,"msg":msg,"source":source})
-        con=db(); cur=con.cursor()
-        cur.execute("""INSERT INTO alerts_events(created_at,obs_date,product_code,scope,level,metric,value,change_value,source,message,whatsapp_sent)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                    (datetime.datetime.utcnow().isoformat(), obs_date, code, scope, level, metric, value, change, source, msg, 0))
-        con.commit(); con.close()
-
-    # Index alerts (canasta)
-    idx_rule = rule_for("CANASTA_INDEX")
-    if idx_can_d is not None and idx_rule.get("daily_up") is not None and idx_can_d >= idx_rule["daily_up"]:
-        add_alert("INDEX", "CANASTA_INDEX", "RED", "daily_change", idx_can_d, idx_can_d, "Sistema", "🔴 Presión diaria en canasta (índice)")
-    if idx_can_w is not None and idx_rule.get("weekly_up") is not None and idx_can_w >= idx_rule["weekly_up"]:
-        add_alert("INDEX", "CANASTA_INDEX", "RED", "weekly_change", idx_can_w, idx_can_w, "Sistema", "🔴 Presión semanal en canasta (índice)")
-
-    # Mobility index alert (simple)
-    pas_rule = rule_for("PASAJE")
-    if idx_mob_d is not None and pas_rule.get("daily_up") is not None and idx_mob_d >= pas_rule["daily_up"]:
-        add_alert("INDEX", "MOVILIDAD_INDEX", "ORANGE", "daily_change", idx_mob_d, idx_mob_d, "Sistema", "🟠 Presión diaria en movilidad (índice)")
-
-    # Product-level RED alerts (brusco)
-    for code, val in now.items():
-        r = rule_for(code)
-        if prev1.get(code) not in (None,0) and val is not None:
-            ch = val/prev1[code]-1.0
-            if r.get("daily_up") is not None and ch >= r["daily_up"]:
-                add_alert("PRODUCT", code, "RED", "daily_change", val, ch, "Relevamiento/Excel", f"🔴 Movimiento brusco al alza: {code} ({ch*100:.1f}%)")
-            if r.get("daily_down") is not None and ch <= r["daily_down"]:
-                add_alert("PRODUCT", code, "RED", "daily_change", val, ch, "Relevamiento/Excel", f"🔴 Movimiento brusco a la baja: {code} ({ch*100:.1f}%)")
-
-    # WhatsApp para alertas ROJAS
-    red = [a for a in alerts if a["level"]=="RED"]
-    if red:
-        lines = [f"OMPP — ALERTA 🔴 ({obs_date})"]
-        for a in red[:8]:
-            lines.append(f"- {a['msg']}")
-        res = whatsapp_send("\n".join(lines))
-        if res.get("sent"):
-            con=db(); cur=con.cursor()
-            cur.execute("UPDATE alerts_events SET whatsapp_sent=1 WHERE obs_date=? AND level='RED' AND whatsapp_sent=0", (obs_date,))
-            con.commit(); con.close()
-
-    # Persist in computed (daily snapshot; weekly embedded)
-    con=db(); cur=con.cursor()
-    cur.execute(
-        """INSERT INTO computed(week_date,index_canasta,index_mobility,costilla_avg,costilla_weekly_change,alerts_json,created_at)
-           VALUES (?,?,?,?,?,?,?)
-           ON CONFLICT(week_date) DO UPDATE SET
-             index_canasta=excluded.index_canasta,
-             index_mobility=excluded.index_mobility,
-             costilla_avg=excluded.costilla_avg,
-             costilla_weekly_change=excluded.costilla_weekly_change,
-             alerts_json=excluded.alerts_json,
-             created_at=excluded.created_at""",
-        (obs_date, idx_can_d, idx_mob_d, cost, cost_d, json.dumps({"alerts":alerts, "weekly":{"canasta":idx_can_w,"movilidad":idx_mob_w,"costilla":cost_w}}, ensure_ascii=False), datetime.datetime.utcnow().isoformat())
-    )
-    con.commit(); con.close()
-
-    return {
-        "obs_date": obs_date,
-        "week_date": obs_date,
-        "index_canasta": idx_can_d,
-        "index_mobility": idx_mob_d,
-        "costilla_avg": cost,
-        "costilla_weekly_change": cost_d,
-        "alerts": alerts,
-        "weekly": {"canasta": idx_can_w, "movilidad": idx_mob_w, "costilla": cost_w}
-    }
+def fmt_gs(x):
+    return "" if x is None else f"{int(round(x)):,}".replace(",", ".")
 
 def compute_week(week_date: str):
     return compute_date(week_date)
