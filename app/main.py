@@ -64,9 +64,6 @@ app.mount(
 # -------------------------------------------------
 # Asegurar tabla de indicadores externos
 # -------------------------------------------------
-
-def ensure_external_table():
-
     con = db()
     cur = con.cursor()
 
@@ -153,6 +150,8 @@ def semaforo_pct(p):
 
 def db():
     return sqlite3.connect(DB_PATH)
+# asegurar tabla de indicadores externos
+ensure_external_table()
 
 def ensure_raw_table():
     con = db()
