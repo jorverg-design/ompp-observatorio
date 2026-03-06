@@ -399,7 +399,10 @@ def home(request: Request):
     last = weeks[-1] if weeks else None
     metrics = compute_date(last) if last else None
 
-   # USD/PYG
+    # -----------------------------
+    # USD / PYG (seguro)
+    # -----------------------------
+
     usd_date = None
     usd_value = None
 
@@ -420,12 +423,16 @@ def home(request: Request):
     if usd_date and usd_value:
         from datetime import date, timedelta
 
-        y = (date.fromisoformat(usd_date) - timedelta(days=1)).isoformat()
-        usd_prev_value = get_external_by_date("USD_PYG", y)
+        try:
+            y = (date.fromisoformat(usd_date) - timedelta(days=1)).isoformat()
+            usd_prev_value = get_external_by_date("USD_PYG", y)
 
-        if usd_prev_value:
-            usd_change_24h = pct_change(usd_value, usd_prev_value)
-            usd_semaforo = semaforo_pct(usd_change_24h)
+            if usd_prev_value:
+                usd_change_24h = pct_change(usd_value, usd_prev_value)
+                usd_semaforo = semaforo_pct(usd_change_24h)
+
+        except Exception:
+            pass
 
     tpl = env.get_template("dashboard.html")
 
