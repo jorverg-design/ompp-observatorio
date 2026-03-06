@@ -22,9 +22,53 @@
   <input type="hidden" name="source" value="Excel">
   <button class="btn secondary" type="submit">Importar Excel (Canasta_25)</button>
 </form>
+</div>
+
+
+<!-- ================================================= -->
+<!-- INDICADORES INTERNACIONALES -->
+<!-- ================================================= -->
+
+<h2>Indicadores Internacionales</h2>
+
+<div class="kpis">
+
+<div class="card">
+<div class="k">USD / PYG</div>
+<div class="v">{{ fmt_gs(usd_value) if usd_value else "—" }}</div>
+</div>
+
+<div class="card">
+<div class="k">Brent (USD)</div>
+<div class="v">{{ brent_value if brent_value else "—" }}</div>
+</div>
+
+<div class="card">
+<div class="k">Diesel (USD)</div>
+<div class="v">{{ diesel_value if diesel_value else "—" }}</div>
+</div>
+
+<div class="card">
+<div class="k">Gasolina (USD)</div>
+<div class="v">{{ gasoline_value if gasoline_value else "—" }}</div>
+</div>
+
+<div class="card">
+<div class="k">Trigo (USD)</div>
+<div class="v">{{ wheat_value if wheat_value else "—" }}</div>
+</div>
+
+<div class="card">
+<div class="k">Maíz (USD)</div>
+<div class="v">{{ corn_value if corn_value else "—" }}</div>
+</div>
 
 </div>
 
+
+<!-- ================================================= -->
+<!-- DATOS SEMANALES -->
+<!-- ================================================= -->
 
 {% if last %}
 
@@ -34,18 +78,18 @@
 
 <div class="card">
 <div class="k">Índice Canasta</div>
-<div class="v">{{ fmt_pct(m.index_canasta) }}</div>
+<div class="v">{{ fmt_pct(m.index_canasta) if m else "" }}</div>
 </div>
 
 <div class="card">
 <div class="k">Índice Movilidad</div>
-<div class="v">{{ fmt_pct(m.index_mobility) }}</div>
+<div class="v">{{ fmt_pct(m.index_mobility) if m else "" }}</div>
 </div>
 
 <div class="card">
 <div class="k">Costilla (Gs/kg)</div>
-<div class="v">{{ fmt_gs(m.costilla_avg) }}</div>
-<div class="s">Variación semanal: {{ fmt_pct(m.costilla_weekly_change) }}</div>
+<div class="v">{{ fmt_gs(m.costilla_avg) if m else "" }}</div>
+<div class="s">Variación semanal: {{ fmt_pct(m.costilla_weekly_change) if m else "" }}</div>
 </div>
 
 <div class="card">
@@ -80,7 +124,7 @@ Variación 24h:
 
 <h3>Semáforos</h3>
 
-{% if m.alerts and m.alerts|length > 0 %}
+{% if m and m.alerts and m.alerts|length > 0 %}
 
 <ul>
 
