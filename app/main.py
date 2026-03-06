@@ -220,15 +220,11 @@ def debug_external():
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
-
     weeks = latest_weeks(12)
     last = weeks[-1] if weeks else None
     metrics = compute_date(last) if last else None
 
-    # -----------------------------
     # USD / PYG
-    # -----------------------------
-
     usd_date = None
     usd_value = None
     usd_prev_value = None
@@ -237,81 +233,64 @@ def home(request: Request):
 
     try:
         usd_last = get_last_external("USD_PYG")
-
         if usd_last:
             usd_date = usd_last[0]
             usd_value = float(usd_last[1])
 
             from datetime import date, timedelta
-
             y = (date.fromisoformat(usd_date) - timedelta(days=1)).isoformat()
             usd_prev_value = get_external_by_date("USD_PYG", y)
 
-            if usd_prev_value:
+            if usd_prev_value is not None:
                 usd_change_24h = pct_change(usd_value, usd_prev_value)
                 usd_semaforo = semaforo_pct(usd_change_24h)
-
     except Exception:
         pass
 
-    # -----------------------------
-    # Indicadores globales
-    # -----------------------------
+    # Indicadores internacionales
+    def ext(series: str):
+        r = get_last_external(series)
+        return float(r[1]) if r and r[1] is not None else None
 
-def ext(series):
-    r = get_last_external(series)
-    return float(r[1]) if r and r[1] is not None else None
+    def ext_prev(series: str):
+        r = get_previous_external(series)
+        return float(r[1]) if r and r[1] is not None else None
 
-def ext_prev(series):
-    r = get_previous_external(series)
-    return float(r[1]) if r and r[1] is not None else None
+    brent_value = ext("BRENT_USD")
+    diesel_value = ext("DIESEL_USD")
+    gasoline_value = ext("GASOLINE_USD")
+    wheat_value = ext("WHEAT_USD")
+    corn_value = ext("CORN_USD")
 
-# valores actuales
-brent_value = ext("BRENT_USD")
-diesel_value = ext("DIESEL_USD")
-gasoline_value = ext("GASOLINE_USD")
-wheat_value = ext("WHEAT_USD")
-corn_value = ext("CORN_USD")
+    brent_change = pct_change(brent_value, ext_prev("BRENT_USD"))
+    diesel_change = pct_change(diesel_value, ext_prev("DIESEL_USD"))
+    gasoline_change = pct_change(gasoline_value, ext_prev("GASOLINE_USD"))
+    wheat_change = pct_change(wheat_value, ext_prev("WHEAT_USD"))
+    corn_change = pct_change(corn_value, ext_prev("CORN_USD"))
 
-# valores anteriores
-brent_prev = ext_prev("BRENT_USD")
-diesel_prev = ext_prev("DIESEL_USD")
-gasoline_prev = ext_prev("GASOLINE_USD")
-wheat_prev = ext_prev("WHEAT_USD")
-corn_prev = ext_prev("CORN_USD")
-
-# variaciones
-brent_change = pct_change(brent_value, brent_prev)
-diesel_change = pct_change(diesel_value, diesel_prev)
-gasoline_change = pct_change(gasoline_value, gasoline_prev)
-wheat_change = pct_change(wheat_value, wheat_prev)
-corn_change = pct_change(corn_value, corn_prev)
     tpl = env.get_template("dashboard.html")
-
-return tpl.render(
-    weeks=weeks,
-    last=last,
-    m=metrics,
-    fmt_pct=fmt_pct,
-    fmt_gs=fmt_gs,
-    usd_date=usd_date,
-    usd_value=usd_value,
-    usd_prev_value=usd_prev_value,
-    usd_change_24h=usd_change_24h,
-    usd_semaforo=usd_semaforo,
-
-    brent_value=brent_value,
-    diesel_value=diesel_value,
-    gasoline_value=gasoline_value,
-    wheat_value=wheat_value,
-    corn_value=corn_value,
-
-    brent_change=brent_change,
-    diesel_change=diesel_change,
-    gasoline_change=gasoline_change,
-    wheat_change=wheat_change,
-    corn_change=corn_change
-)
+    return tpl.render(
+        weeks=weeks,
+        last=last,
+        m=metrics,
+        fmt_pct=fmt_pct,
+        fmt_gs=fmt_gs,
+        usd_date=usd_date,
+        usd_value=usd_value,
+        usd_prev_value=usd_prev_value,
+        usd_change_24h=usd_change_24h,
+        usd_semaforo=usd_semaforo,
+        brent_value=brent_value,
+        diesel_value=diesel_value,
+        gasoline_value=gasoline_value,
+        wheat_value=wheat_value,
+        corn_value=corn_value,
+        brent_change=brent_change,
+        diesel_change=diesel_change,
+        gasoline_change=gasoline_change,
+        wheat_change=wheat_change,
+        corn_change=corn_change
+    )
 
 @app.get("/ranking", response_class=HTMLResponse)
 def ranking_page(request: Request, obs_date: str = None):
