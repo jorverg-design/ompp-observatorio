@@ -54,10 +54,49 @@ def whatsapp_send(msg: str):
     return {"sent": True, "mode": "test_log" if cfg.get("test_mode", True) else "configured"}
 
 app = FastAPI(title="OMPP Sistema con Reporte Real")
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+
+app.mount(
+    "/static",
+    StaticFiles(directory=os.path.join(BASE_DIR, "static")),
+    name="static"
+)
+
+# -------------------------------------------------
+# Asegurar tabla de indicadores externos
+# -------------------------------------------------
+
+def ensure_external_table():
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS external_series (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            series TEXT NOT NULL,
+            obs_date TEXT NOT NULL,
+            value REAL,
+            source TEXT NOT NULL
+        )
+    """)
+
+    con.commit()
+    con.close()
+
+
+# ejecutar al iniciar el servidor
+ensure_external_table()
+
+
+# -------------------------------------------------
+# Obtener último dato externo
+# -------------------------------------------------
 
 def get_last_external(series: str):
+
     try:
+
         con = db()
         cur = con.cursor()
 
@@ -70,11 +109,13 @@ def get_last_external(series: str):
         """, (series,))
 
         row = cur.fetchone()
+
         con.close()
 
         return row
 
     except Exception:
+
         return None
 
 def get_external_by_date(series: str, obs_date: str):
