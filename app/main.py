@@ -57,17 +57,25 @@ app = FastAPI(title="OMPP Sistema con Reporte Real")
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 def get_last_external(series: str):
-    con = db(); cur = con.cursor()
-    cur.execute("""
-        SELECT obs_date, value
-        FROM external_series
-        WHERE series = ?
-        ORDER BY obs_date DESC
-        LIMIT 1
-    """, (series,))
-    row = cur.fetchone()
-    con.close()
-    return row  # (obs_date, value) o None
+    try:
+        con = db()
+        cur = con.cursor()
+
+        cur.execute("""
+            SELECT obs_date, value
+            FROM external_series
+            WHERE series=?
+            ORDER BY obs_date DESC
+            LIMIT 1
+        """, (series,))
+
+        row = cur.fetchone()
+        con.close()
+
+        return row
+
+    except Exception:
+        return None
 
 def get_external_by_date(series: str, obs_date: str):
     con = db(); cur = con.cursor()
