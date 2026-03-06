@@ -24,11 +24,6 @@
 </form>
 </div>
 
-
-<!-- ================================================= -->
-<!-- INDICADORES INTERNACIONALES -->
-<!-- ================================================= -->
-
 <h2>Indicadores Internacionales</h2>
 
 <div class="kpis">
@@ -39,36 +34,31 @@
 </div>
 
 <div class="card">
-<div class="k">Brent (USD)</div>
+<div class="k">Brent</div>
 <div class="v">{{ brent_value if brent_value else "—" }}</div>
 </div>
 
 <div class="card">
-<div class="k">Diesel (USD)</div>
+<div class="k">Diesel</div>
 <div class="v">{{ diesel_value if diesel_value else "—" }}</div>
 </div>
 
 <div class="card">
-<div class="k">Gasolina (USD)</div>
+<div class="k">Gasolina</div>
 <div class="v">{{ gasoline_value if gasoline_value else "—" }}</div>
 </div>
 
 <div class="card">
-<div class="k">Trigo (USD)</div>
+<div class="k">Trigo</div>
 <div class="v">{{ wheat_value if wheat_value else "—" }}</div>
 </div>
 
 <div class="card">
-<div class="k">Maíz (USD)</div>
+<div class="k">Maíz</div>
 <div class="v">{{ corn_value if corn_value else "—" }}</div>
 </div>
 
 </div>
-
-
-<!-- ================================================= -->
-<!-- DATOS SEMANALES -->
-<!-- ================================================= -->
 
 {% if last %}
 
@@ -94,69 +84,41 @@
 
 <div class="card">
 <div class="k">USD / PYG</div>
-
 {% if usd_value %}
-
 <div class="v">{{ fmt_gs(usd_value) }}</div>
-
 <div class="s">
 Variación 24h:
-
 {% if usd_change_24h %}
 {{ "%.2f"|format(usd_change_24h) }}%
 {% else %}
 —
 {% endif %}
-
 </div>
-
 {% else %}
-
 <div class="v">—</div>
 <div class="s">Sin datos</div>
-
 {% endif %}
-
 </div>
 
 </div>
-
 
 <h3>Semáforos</h3>
 
 {% if m and m.alerts and m.alerts|length > 0 %}
-
 <ul>
-
 {% for a in m.alerts %}
 <li>{{ a.msg }}</li>
 {% endfor %}
-
 </ul>
-
 {% else %}
-
 <p>Sin alertas relevantes.</p>
-
 {% endif %}
 
-
 <div class="actions">
-
-<a class="btn secondary" href="/ranking">
-Ver Ranking
-</a>
-
-<a class="btn" href="/reporte/pdf_real?obs_date={{ last }}">
-Reporte Real (PDF)
-</a>
-
-<a class="btn secondary" href="/reporte/pptx?obs_date={{ last }}">
-Reporte Real (PPT)
-</a>
-
+<a class="btn secondary" href="/ranking">Ver Ranking</a>
+<a class="btn" href="/reporte/pdf_real?obs_date={{ last }}">Reporte Real (PDF)</a>
+<a class="btn secondary" href="/reporte/pptx?obs_date={{ last }}">Reporte Real (PPT)</a>
 </div>
-
 
 {% else %}
 
