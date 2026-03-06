@@ -359,6 +359,11 @@ def latest_weeks(limit=30):
     con.close()
     return list(reversed(weeks))
 
+def fmt_pct(x):
+    return "" if x is None else f"{x*100:.1f}%"
+
+def fmt_gs(x):
+    return "" if x is None else f"{int(round(x)):,}".replace(",", ".")
 
 @app.get("/health")
 def health():
