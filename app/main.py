@@ -391,20 +391,29 @@ def home(request: Request):
     last = weeks[-1] if weeks else None
     metrics = compute_date(last) if last else None
 
-    # --- Panel Externo: USD/PYG ---
+    # USD/PYG
     usd_last = get_last_external("USD_PYG")
-    usd_date, usd_value = (usd_last[0], float(usd_last[1])) if usd_last else (None, None)
+
+    if usd_last:
+        usd_date = usd_last[0]
+        usd_value = float(usd_last[1])
+    else:
+        usd_date = None
+        usd_value = None
 
     usd_prev_value = None
     usd_change_24h = None
     usd_semaforo = ("GRIS", "Sin dato")
 
-    if usd_date and usd_value is not None:
+    if usd_date and usd_value:
         from datetime import date, timedelta
+
         y = (date.fromisoformat(usd_date) - timedelta(days=1)).isoformat()
         usd_prev_value = get_external_by_date("USD_PYG", y)
-        usd_change_24h = pct_change(usd_value, usd_prev_value)
-        usd_semaforo = semaforo_pct(usd_change_24h)
+
+        if usd_prev_value:
+            usd_change_24h = pct_change(usd_value, usd_prev_value)
+            usd_semaforo = semaforo_pct(usd_change_24h)
 
     tpl = env.get_template("dashboard.html")
 
