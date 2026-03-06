@@ -31,31 +31,79 @@
 <div class="card">
 <div class="k">USD / PYG</div>
 <div class="v">{{ fmt_gs(usd_value) if usd_value else "—" }}</div>
+<div class="s">
+Variación 24h:
+{% if usd_change_24h is not none %}
+{{ "%.2f"|format(usd_change_24h * 100) }}%
+{% else %}
+—
+{% endif %}
+</div>
 </div>
 
 <div class="card">
 <div class="k">Brent</div>
 <div class="v">{{ brent_value if brent_value else "—" }}</div>
+<div class="s">
+Variación:
+{% if brent_change is not none %}
+{{ "%.2f"|format(brent_change * 100) }}%
+{% else %}
+—
+{% endif %}
+</div>
 </div>
 
 <div class="card">
 <div class="k">Diesel</div>
 <div class="v">{{ diesel_value if diesel_value else "—" }}</div>
+<div class="s">
+Variación:
+{% if diesel_change is not none %}
+{{ "%.2f"|format(diesel_change * 100) }}%
+{% else %}
+—
+{% endif %}
+</div>
 </div>
 
 <div class="card">
 <div class="k">Gasolina</div>
 <div class="v">{{ gasoline_value if gasoline_value else "—" }}</div>
+<div class="s">
+Variación:
+{% if gasoline_change is not none %}
+{{ "%.2f"|format(gasoline_change * 100) }}%
+{% else %}
+—
+{% endif %}
+</div>
 </div>
 
 <div class="card">
 <div class="k">Trigo</div>
 <div class="v">{{ wheat_value if wheat_value else "—" }}</div>
+<div class="s">
+Variación:
+{% if wheat_change is not none %}
+{{ "%.2f"|format(wheat_change * 100) }}%
+{% else %}
+—
+{% endif %}
+</div>
 </div>
 
 <div class="card">
 <div class="k">Maíz</div>
 <div class="v">{{ corn_value if corn_value else "—" }}</div>
+<div class="s">
+Variación:
+{% if corn_change is not none %}
+{{ "%.2f"|format(corn_change * 100) }}%
+{% else %}
+—
+{% endif %}
+</div>
 </div>
 
 </div>
@@ -84,20 +132,15 @@
 
 <div class="card">
 <div class="k">USD / PYG</div>
-{% if usd_value %}
-<div class="v">{{ fmt_gs(usd_value) }}</div>
+<div class="v">{{ fmt_gs(usd_value) if usd_value else "—" }}</div>
 <div class="s">
 Variación 24h:
-{% if usd_change_24h %}
-{{ "%.2f"|format(usd_change_24h) }}%
+{% if usd_change_24h is not none %}
+{{ "%.2f"|format(usd_change_24h * 100) }}%
 {% else %}
 —
 {% endif %}
 </div>
-{% else %}
-<div class="v">—</div>
-<div class="s">Sin datos</div>
-{% endif %}
 </div>
 
 </div>
