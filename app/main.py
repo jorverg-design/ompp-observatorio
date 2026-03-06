@@ -212,6 +212,9 @@ def home(request: Request):
 
     usd_date = None
     usd_value = None
+    usd_prev_value = None
+    usd_change_24h = None
+    usd_semaforo = ("GRIS", "Sin dato")
 
     try:
         usd_last = get_last_external("USD_PYG")
@@ -220,17 +223,8 @@ def home(request: Request):
             usd_date = usd_last[0]
             usd_value = float(usd_last[1])
 
-    except Exception:
-        usd_last = None
+            from datetime import date, timedelta
 
-    usd_prev_value = None
-    usd_change_24h = None
-    usd_semaforo = ("GRIS", "Sin dato")
-
-    if usd_date and usd_value is not None:
-        from datetime import date, timedelta
-
-        try:
             y = (date.fromisoformat(usd_date) - timedelta(days=1)).isoformat()
             usd_prev_value = get_external_by_date("USD_PYG", y)
 
@@ -238,11 +232,11 @@ def home(request: Request):
                 usd_change_24h = pct_change(usd_value, usd_prev_value)
                 usd_semaforo = semaforo_pct(usd_change_24h)
 
-        except Exception:
-            pass
+    except Exception:
+        pass
 
     # -----------------------------
-    # Indicadores internacionales
+    # Indicadores globales
     # -----------------------------
 
     def ext(series):
