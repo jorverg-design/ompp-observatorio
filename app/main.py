@@ -480,21 +480,36 @@ def home(request: Request):
         except Exception:
             pass
 
-    tpl = env.get_template("dashboard.html")
+# Indicadores globales
 
-    return tpl.render(
-        weeks=weeks,
-        last=last,
-        m=metrics,
-        fmt_pct=fmt_pct,
-        fmt_gs=fmt_gs,
-        usd_date=usd_date,
-        usd_value=usd_value,
-        usd_prev_value=usd_prev_value,
-        usd_change_24h=usd_change_24h,
-        usd_semaforo=usd_semaforo
-    )
+def ext(series):
+    r = get_last_external(series)
+    return r[1] if r else None
 
+brent_value = ext("BRENT_USD")
+diesel_value = ext("DIESEL_USD")
+gasoline_value = ext("GASOLINE_USD")
+wheat_value = ext("WHEAT_USD")
+corn_value = ext("CORN_USD")
+    
+return tpl.render(
+    weeks=weeks,
+    last=last,
+    m=metrics,
+    fmt_pct=fmt_pct,
+    fmt_gs=fmt_gs,
+    usd_date=usd_date,
+    usd_value=usd_value,
+    usd_prev_value=usd_prev_value,
+    usd_change_24h=usd_change_24h,
+    usd_semaforo=usd_semaforo,
+
+    brent_value=brent_value,
+    diesel_value=diesel_value,
+    gasoline_value=gasoline_value,
+    wheat_value=wheat_value,
+    corn_value=corn_value
+)
 @app.get("/ranking", response_class=HTMLResponse)
 def ranking_page(request: Request, obs_date: str = None):
     weeks = latest_weeks(30)
