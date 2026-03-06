@@ -399,15 +399,19 @@ def home(request: Request):
     last = weeks[-1] if weeks else None
     metrics = compute_date(last) if last else None
 
-    # USD/PYG
-    usd_last = get_last_external("USD_PYG")
+   # USD/PYG
+    usd_date = None
+    usd_value = None
 
-    if usd_last:
-        usd_date = usd_last[0]
-        usd_value = float(usd_last[1])
-    else:
-        usd_date = None
-        usd_value = None
+    try:
+        usd_last = get_last_external("USD_PYG")
+
+        if usd_last:
+            usd_date = usd_last[0]
+            usd_value = float(usd_last[1])
+
+    except Exception:
+        usd_last = None
 
     usd_prev_value = None
     usd_change_24h = None
