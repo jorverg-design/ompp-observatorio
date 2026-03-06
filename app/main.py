@@ -386,9 +386,27 @@ def debug_external():
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
+
     weeks = latest_weeks(12)
     last = weeks[-1] if weeks else None
     metrics = compute_date(last) if last else None
+
+    # --- Panel Externo: USD/PYG ---
+    usd_last = get_last_external("USD_PYG")
+    usd_date, usd_value = (usd_last[0], float(usd_last[1])) if usd_last else (None, None)
+
+    # Indicadores globales
+    brent_last = get_last_external("BRENT_USD")
+    diesel_last = get_last_external("DIESEL_USD")
+    gasoline_last = get_last_external("GASOLINE_USD")
+    wheat_last = get_last_external("WHEAT_USD")
+    corn_last = get_last_external("CORN_USD")
+
+    brent_value = brent_last[1] if brent_last else None
+    diesel_value = diesel_last[1] if diesel_last else None
+    gasoline_value = gasoline_last[1] if gasoline_last else None
+    wheat_value = wheat_last[1] if wheat_last else None
+    corn_value = corn_last[1] if corn_last else None
 
     # INDICADORES GLOBALES
 
