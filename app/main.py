@@ -6,6 +6,8 @@ import io
 import os
 import sqlite3
 import tempfile
+import requests
+import re
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -443,7 +445,55 @@ def indicators_map(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         }
         for r in rows
     }
+def fetch_usd_pyg_bcp() -> dict[str, float | str | None]:
+    """
+    Intenta leer el tipo de cambio referencial USD/PYG desde la página del BCP.
+    """
+    url = "https://www.bcp.gov.py/webapps/web/cotizacion/monedas"
 
+    try:
+        resp = requests.get(url, timeout=20)
+        resp.raise_for_status()
+        html = resp.text
+
+        match = re.search(
+            r"(DOLAR AMERICANO|USD).*?([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})",
+            html,
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        if not match:
+            return {"value": None, "variation": None, "source": "BCP"}
+
+        raw_value = match.group(2)
+        value = float(raw_value.replace(".", "").replace(",", "."))
+
+        return {"value": value, "variation": None, "source": "BCP"}
+
+    except Exception:
+        return {"value": None, "variation": None, "source": "BCP"}
+
+def update_external_indicators(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    """
+    Actualiza indicadores externos.
+    Por ahora solo USD/PYG desde BCP.
+    """
+    results: dict[str, dict[str, Any]] = {}
+
+    usd = fetch_usd_pyg_bcp()
+    results["usd_pyg"] = usd
+
+    if usd["value"] is not None:
+        conn.execute(
+            """
+            UPDATE indicators
+            SET value = ?, variation = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE key = 'usd_pyg'
+            """,
+            (usd["value"], usd["variation"]),
+        )
+
+    return results
 
 
 def income_settings(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -1225,6 +1275,10 @@ def render_dashboard(conn: sqlite3.Connection, message: str = "") -> str:
 @app.get("/", response_class=HTMLResponse)
 def home() -> HTMLResponse:
     with db() as conn:
+        try:
+            update_external_indicators(conn)
+        except Exception:
+            pass
         return HTMLResponse(render_dashboard(conn))
 
 
@@ -1316,7 +1370,6 @@ def api_summary(location_code: str = "NAT") -> JSONResponse:
         week = latest_week(conn, location_code)
         return JSONResponse({"week": week, "location": location_code, "items": summary_for_week(conn, week, location_code)})
 
-
 @app.get("/api/ranking")
 def api_ranking(location_code: str = "NAT") -> JSONResponse:
     with db() as conn:
@@ -1347,6 +1400,11 @@ def api_social_pressure(location_code: str = "NAT") -> JSONResponse:
     with db() as conn:
         return JSONResponse(social_pressure(conn, location_code))
 
+@app.get("/api/update_external_indicators")
+def api_update_external_indicators() -> JSONResponse:
+    with db() as conn:
+        results = update_external_indicators(conn)
+        return JSONResponse({"ok": True, "results": results})
 
 @app.post("/api/indicators")
 async def api_update_indicators(request: Request) -> JSONResponse:
