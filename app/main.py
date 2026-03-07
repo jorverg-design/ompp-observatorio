@@ -1067,16 +1067,13 @@ def render_dashboard(conn: sqlite3.Connection, message: str = "") -> str:
                         <a class="btn alt" href="/backup.csv">Exportar CSV</a>
                     </div>
                     <form action="/import_excel" method="post" enctype="multipart/form-data">
-                        <div class="toolbar">
-                            <label class="file">
-                                Cargar datos semanales
-                                <input type="file" name="file" accept=".xlsx,.xlsm" required />
-                            </label>
-                            <input type="hidden" name="source" value="Excel" />
-                            <input type="hidden" name="location_code" value="NAT" />
-                            <button class="btn" type="submit">Importar Excel (Canasta_25)</button>
-                        </div>
-                    </form>
+    <div class="toolbar" style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+        <input type="file" name="file" accept=".xlsx,.xlsm" required style="padding:8px; background:white; border:1px solid #dbe3ee; border-radius:8px;" />
+        <input type="hidden" name="source" value="Excel" />
+        <input type="hidden" name="location_code" value="NAT" />
+        <button class="btn" type="submit">Importar Excel</button>
+    </div>
+</form>
                     <p class="muted" style="margin-top:12px;">Última semana disponible: <strong>{latest_week_label}</strong></p>
                     <p class="muted">{import_info}</p>
                 </div>
