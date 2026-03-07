@@ -448,6 +448,7 @@ def indicators_map(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         }
         for r in rows
     }
+
 def fetch_usd_pyg_bcp() -> dict[str, float | str | None]:
     """
     Lee el tipo de cambio referencial USD/PYG desde la página del BCP.
@@ -458,12 +459,15 @@ def fetch_usd_pyg_bcp() -> dict[str, float | str | None]:
     try:
         resp = requests.get(url, timeout=20)
         resp.raise_for_status()
-        html = resp.text
 
-        # Patrón más simple y más robusto para la línea del dólar
+        soup = BeautifulSoup(resp.text, "html.parser")
+        text = soup.get_text(" ", strip=True)
+        text = re.sub(r"\s+", " ", text)
+
+        # Busca exactamente la línea del dólar en el texto ya limpio
         match = re.search(
-            r"D[ÓO]LAR\s+ESTADOUNIDENSE\s+USD\s+1,0000\s+([0-9.,]+)",
-            html,
+            r"DÓLAR ESTADOUNIDENSE\s+USD\s+1,0000\s+([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})",
+            text,
             re.IGNORECASE,
         )
 
