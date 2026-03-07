@@ -107,20 +107,39 @@ DEFAULT_INDICATORS = [
     ("maiz", "Maíz"),
 ]
 
+import os
+import psycopg2
+import psycopg2.extras
+
 
 @contextmanager
-def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+def db():
+    database_url = os.getenv("DATABASE_URL")
 
+    if database_url:
+        # Producción (Railway → PostgreSQL)
+        conn = psycopg2.connect(database_url)
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    else:
+        # Local (SQLite)
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 # =========================================================
 # HELPERS
