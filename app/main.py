@@ -839,56 +839,100 @@ def parse_canasta_excel(conn: sqlite3.Connection, excel_path: Path, source: str,
 
     wb = load_workbook(excel_path, data_only=True)
 
-    sheet_name = "Canasta_25"
-
-    if sheet_name not in wb.sheetnames:
-        sheet_name = wb.sheetnames[0]
-
-    sh = wb[sheet_name]
+    # decidir hoja automáticamente
+    if "Carga_Semanal" in wb.sheetnames:
+        sh = wb["Carga_Semanal"]
+        mode = "long"
+    elif "Canasta_25" in wb.sheetnames:
+        sh = wb["Canasta_25"]
+        mode = "pivot"
+    else:
+        sh = wb[wb.sheetnames[0]]
+        mode = "pivot"
 
     location_id = get_location_id(conn, location_code)
-    # Encabezados esperados en fila 6, columnas B:Z
-    product_map: dict[int, int] = {}
-    detected_products = 0
-    for col in range(2, 27):
-        header = sh.cell(row=6, column=col).value
-        if header is None or str(header).strip() == "":
-            continue
-        product_id = ensure_product(conn, str(header), col)
-        product_map[col] = product_id
-        detected_products += 1
 
-    if detected_products == 0:
-        raise ValueError("No se detectaron encabezados de productos en la fila 6 (columnas B:Z).")
+    staged_rows = []
+    weeks = set()
+    detected_products = set()
 
-    staged_rows: list[tuple[str, int, int, float, str]] = []
-    weeks: set[str] = set()
+    # ======================================================
+    # FORMATO 1: Carga_Semanal (Google Sheets)
+    # columnas: fecha_semana | producto | precio
+    # ======================================================
+    if mode == "long":
 
-    for r in range(8, (sh.max_row or 0) + 1):
-        raw_week = sh.cell(row=r, column=1).value
-        week_date = iso_date(raw_week)
-        if not week_date:
-            continue
+        headers = {}
 
-        row_has_data = False
-        for col, product_id in product_map.items():
-            raw_value = sh.cell(row=r, column=col).value
-            price = to_float(raw_value)
-            if price is None:
+        for col in range(1, sh.max_column + 1):
+            val = sh.cell(row=1, column=col).value
+            if val:
+                headers[str(val).strip().lower()] = col
+
+        if "fecha_semana" not in headers or "producto" not in headers or "precio" not in headers:
+            raise ValueError("La hoja Carga_Semanal debe tener columnas: fecha_semana, producto, precio")
+
+        col_fecha = headers["fecha_semana"]
+        col_producto = headers["producto"]
+        col_precio = headers["precio"]
+
+        for r in range(2, sh.max_row + 1):
+
+            week_date = iso_date(sh.cell(row=r, column=col_fecha).value)
+            product = sh.cell(row=r, column=col_producto).value
+            price = to_float(sh.cell(row=r, column=col_precio).value)
+
+            if not week_date or not product or price is None:
                 continue
-            if price < 0:
-                raise ValueError(f"Precio negativo detectado en fila {r}, columna {col}.")
-            staged_rows.append((week_date, product_id, location_id, price, source))
-            row_has_data = True
 
-        if row_has_data:
+            product_id = ensure_product(conn, str(product), col_producto)
+
+            staged_rows.append((week_date, product_id, location_id, price, source))
+
             weeks.add(week_date)
+            detected_products.add(product_id)
+
+    # ======================================================
+    # FORMATO 2: Canasta_25 (formato pivot del observatorio)
+    # ======================================================
+    else:
+
+        product_map = {}
+
+        for col in range(2, 27):
+
+            header = sh.cell(row=6, column=col).value
+
+            if header:
+                product_id = ensure_product(conn, str(header), col)
+                product_map[col] = product_id
+
+        for r in range(8, sh.max_row + 1):
+
+            week_date = iso_date(sh.cell(row=r, column=1).value)
+
+            if not week_date:
+                continue
+
+            for col, product_id in product_map.items():
+
+                price = to_float(sh.cell(row=r, column=col).value)
+
+                if price is None:
+                    continue
+
+                staged_rows.append((week_date, product_id, location_id, price, source))
+
+                weeks.add(week_date)
+                detected_products.add(product_id)
 
     if not staged_rows:
-        raise ValueError("El Excel fue leído, pero no se detectaron precios válidos para importar.")
+        raise ValueError("No se detectaron precios válidos para importar.")
 
     inserted = 0
+
     for week_date, product_id, loc_id, price, src in staged_rows:
+
         conn.execute(
             """
             INSERT INTO weekly_prices (week_date, product_id, location_id, price, source)
@@ -901,6 +945,7 @@ def parse_canasta_excel(conn: sqlite3.Connection, excel_path: Path, source: str,
             """,
             (week_date, product_id, loc_id, price, src),
         )
+
         inserted += 1
 
     return ImportResult(
@@ -909,11 +954,10 @@ def parse_canasta_excel(conn: sqlite3.Connection, excel_path: Path, source: str,
         rows_detected=len(staged_rows),
         rows_inserted=inserted,
         weeks_detected=len(weeks),
-        products_detected=detected_products,
+        products_detected=len(detected_products),
         location_code=location_code,
-        message="Importación realizada correctamente sin borrar histórico previo.",
+        message="Importación realizada correctamente.",
     )
-
 
 # =========================================================
 # HTML DASHBOARD
