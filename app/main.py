@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from bs4 import BeautifulSoup
-import psycopg2
-import psycopg2.extras
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
