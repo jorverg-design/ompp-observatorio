@@ -836,13 +836,17 @@ def ensure_product(conn: sqlite3.Connection, raw_name: str, col_index: int) -> i
 
 
 def parse_canasta_excel(conn: sqlite3.Connection, excel_path: Path, source: str, location_code: str = "NAT") -> ImportResult:
+
     wb = load_workbook(excel_path, data_only=True)
-    if "Canasta_25" not in wb.sheetnames:
-        raise ValueError("No se encontró la hoja 'Canasta_25'.")
+
+    sheet_name = "Canasta_25"
+
+    if sheet_name not in wb.sheetnames:
+        sheet_name = wb.sheetnames[0]
+
+    sh = wb[sheet_name]
 
     location_id = get_location_id(conn, location_code)
-    sh = wb["Canasta_25"]
-
     # Encabezados esperados en fila 6, columnas B:Z
     product_map: dict[int, int] = {}
     detected_products = 0
