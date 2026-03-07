@@ -447,8 +447,9 @@ def indicators_map(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     }
 def fetch_usd_pyg_bcp() -> dict[str, float | str | None]:
     """
-    Intenta leer el tipo de cambio referencial USD/PYG desde la página del BCP.
+    Lee el tipo de cambio referencial USD/PYG desde la página del BCP.
     """
+
     url = "https://www.bcp.gov.py/webapps/web/cotizacion/monedas"
 
     try:
@@ -456,8 +457,10 @@ def fetch_usd_pyg_bcp() -> dict[str, float | str | None]:
         resp.raise_for_status()
         html = resp.text
 
+        # Busca la fila del dólar estadounidense y toma el último número,
+        # que corresponde al valor en guaraníes.
         match = re.search(
-            r"(DOLAR AMERICANO|USD).*?([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})",
+            r"D[ÓO]LAR\s+ESTADOUNIDENSE.*?USD\s+1,0000\s+([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})",
             html,
             re.IGNORECASE | re.DOTALL,
         )
@@ -465,10 +468,14 @@ def fetch_usd_pyg_bcp() -> dict[str, float | str | None]:
         if not match:
             return {"value": None, "variation": None, "source": "BCP"}
 
-        raw_value = match.group(2)
+        raw_value = match.group(1)
         value = float(raw_value.replace(".", "").replace(",", "."))
 
-        return {"value": value, "variation": None, "source": "BCP"}
+        return {
+            "value": value,
+            "variation": None,
+            "source": "BCP"
+        }
 
     except Exception:
         return {"value": None, "variation": None, "source": "BCP"}
