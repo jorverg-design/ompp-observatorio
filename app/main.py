@@ -363,6 +363,43 @@ def import_excel(file: UploadFile = File(...), source: str = Form("Excel")):
         compute_date(week_date)
     return RedirectResponse("/", status_code=303)
 
+
+@app.post("/import_excel")
+def import_excel(file: UploadFile = File(...), source: str = Form("Excel")):
+    tmp = os.path.join(BASE_DIR, "_upload.xlsx")
+    with open(tmp, "wb") as f:
+        f.write(file.file.read())
+    wb = load_workbook(tmp, data_only=True)
+    if "Canasta_25" not in wb.sheetnames:
+        return JSONResponse({"ok": False, "error":"No se encontró la hoja Canasta_25"}, status_code=400)
+    sh = wb["Canasta_25"]
+    headers={}
+    for col in range(2, 2+25):
+        headers[col]=sh.cell(row=6, column=col).value
+    prods=fetch_products()
+    name_to_code={n.strip():c for c,n,_,_ in prods}
+    for r in range(8, 8+80):
+        wd=sh.cell(row=r, column=1).value
+        if not wd:
+            continue
+        if isinstance(wd, datetime.datetime): wd=wd.date()
+        if isinstance(wd, datetime.date): week_date=wd.isoformat()
+        else: week_date=str(wd)[:10]
+        for col,nm in headers.items():
+            if nm is None: continue
+            nm=str(nm).strip()
+            if nm not in name_to_code: 
+                continue
+            val=sh.cell(row=r, column=col).value
+            if val is None: 
+                continue
+            code=name_to_code[nm]
+            if code=="INF_ALIM" and val>1:
+                val=val/100.0
+            upsert_obs(code, week_date, val, source=source)
+        compute_date(week_date)
+    return RedirectResponse("/", status_code=303)
+
 def top_movers(obs_date: str, scope_codes=None, k: int = 10):
     """
     Top alzas/bajas diarias por producto (requiere datos del día anterior).
