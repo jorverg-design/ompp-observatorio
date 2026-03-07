@@ -1,1359 +1,1524 @@
+from __future__ import annotations
 
-import os, json, sqlite3, datetime
-from fastapi import FastAPI, Request, Form, UploadFile, File
-from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+import csv
+import datetime as dt
+import io
+import os
+import sqlite3
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from openpyxl import load_workbook
+from pydantic import BaseModel
+from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas as pdfcanvas
-import matplotlib.pyplot as plt
-import numpy as np
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
-import textwrap
-from energy_fx import energy_fx_main
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "ompp.sqlite")
-TPL_DIR = os.path.join(BASE_DIR, "templates")
+# =========================================================
+# OMPP / Observatorio Inteligente de Precios y Abastecimiento
+# main.py - versión integral para pegar y correr
+# ---------------------------------------------------------
+# Qué incluye:
+# - Dashboard institucional
+# - Importación segura de Excel hoja Canasta_25
+# - Histórico semanal en SQLite
+# - Ranking semanal
+# - Reporte PDF
+# - Backup CSV
+# - API de resumen y ranking
+# - Módulo IPPS (Índice de Presión de Precios Semanal)
+# - Módulo de alertas tempranas
+# - Módulo territorial (base lista para crecer)
+# - Módulo social (presión sobre ingreso)
+# - Indicadores internacionales actualizables por API
+# - Migraciones automáticas básicas de esquema
+# =========================================================
 
-env = Environment(loader=FileSystemLoader(TPL_DIR), autoescape=select_autoescape(["html"]))
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = DATA_DIR / "ompp.db"
+UPLOAD_DIR = DATA_DIR / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# --- Config (parametrizable) ---
-CONFIG_DIR = os.path.join(BASE_DIR, "config")
-ALERTAS_PATH = os.path.join(CONFIG_DIR, "alertas.json")
-SISTEMA_PATH = os.path.join(CONFIG_DIR, "sistema.json")
+APP_TITLE = "OMPP Sistema con Reporte Real — Dashboard"
+DEFAULT_SOURCE = "Excel"
+JOB_TOKEN = os.getenv("JOB_TOKEN", "")
 
-def load_json(path, default=None):
+app = FastAPI(title=APP_TITLE)
+
+
+# =========================================================
+# CONFIGURACIÓN BASE
+# =========================================================
+DEFAULT_PRODUCTS = [
+    ("Arroz", 5.0, 0.60, 0.30, 0.20),
+    ("Aceite", 4.0, 0.75, 0.45, 0.30),
+    ("Azúcar", 3.0, 0.35, 0.20, 0.20),
+    ("Yerba", 3.0, 0.20, 0.15, 0.15),
+    ("Fideo", 3.0, 0.70, 0.30, 0.20),
+    ("Harina", 4.0, 0.80, 0.25, 0.15),
+    ("Pan", 5.0, 0.55, 0.30, 0.20),
+    ("Leche", 5.0, 0.35, 0.25, 0.20),
+    ("Huevos", 4.0, 0.10, 0.25, 0.20),
+    ("Queso", 4.0, 0.20, 0.25, 0.20),
+    ("Pollo", 5.0, 0.15, 0.30, 0.25),
+    ("Carne vacuna", 7.0, 0.05, 0.35, 0.30),
+    ("Cerdo", 3.0, 0.10, 0.30, 0.25),
+    ("Tomate", 5.0, 0.10, 0.35, 0.40),
+    ("Cebolla", 4.0, 0.35, 0.30, 0.35),
+    ("Papa", 4.0, 0.40, 0.25, 0.30),
+    ("Locote", 2.0, 0.15, 0.30, 0.35),
+    ("Banana", 2.0, 0.05, 0.15, 0.10),
+    ("Naranja", 2.0, 0.05, 0.15, 0.10),
+    ("Mandioca", 2.0, 0.01, 0.20, 0.20),
+    ("Detergente", 2.0, 0.50, 0.20, 0.15),
+    ("Jabón", 2.0, 0.45, 0.20, 0.15),
+    ("Papel higiénico", 2.0, 0.35, 0.15, 0.10),
+    ("Gas doméstico", 4.0, 0.85, 0.70, 0.80),
+    ("Agua mineral", 2.0, 0.05, 0.15, 0.15),
+]
+
+DEFAULT_LOCATIONS = [
+    ("NAT", "Nacional", "Nacional", "promedio", 1),
+    ("ASU", "Asunción", "Asunción", "urbano", 1),
+    ("CEN", "Central", "Central", "urbano", 1),
+    ("FRO", "Frontera", "Frontera", "frontera", 1),
+    ("INT", "Interior", "Interior", "regional", 1),
+]
+
+DEFAULT_INDICATORS = [
+    ("usd_pyg", "USD / PYG"),
+    ("brent", "Brent"),
+    ("diesel", "Diesel"),
+    ("gasolina", "Gasolina"),
+    ("trigo", "Trigo"),
+    ("maiz", "Maíz"),
+]
+
+
+@contextmanager
+def db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        yield conn
+        conn.commit()
     except Exception:
-        return default if default is not None else {}
-
-def get_alertas():
-    return load_json(ALERTAS_PATH, {})
-
-def get_sistema():
-    return load_json(SISTEMA_PATH, {})
-
-def whatsapp_send(msg: str):
-    """
-    v1: envío parametrizado.
-    - enabled=false -> no envía.
-    - test_mode=true -> escribe en whatsapp_outbox.log.
-    Producción: integrar Meta WhatsApp Cloud API con credenciales y plantillas.
-    """
-    cfg = get_alertas().get("whatsapp", {})
-    if not cfg.get("enabled", False):
-        return {"sent": False, "reason": "disabled"}
-    log_path = os.path.join(BASE_DIR, "whatsapp_outbox.log")
-    stamp = datetime.datetime.now().isoformat()
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(f"[{stamp}] TO={cfg.get('recipients',[])} :: {msg}\n")
-    return {"sent": True, "mode": "test_log" if cfg.get("test_mode", True) else "configured"}
-
-app = FastAPI(title="OMPP Sistema con Reporte Real")
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
-def db():
-    return sqlite3.connect(DB_PATH)
+# =========================================================
+# HELPERS
+# =========================================================
+def normalize_name(value: str | None) -> str:
+    return " ".join((value or "").strip().split()).lower()
 
 
-def ensure_external_table():
-    con = db()
-    cur = con.cursor()
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS external_series (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT NOT NULL,
-            series TEXT NOT NULL,
-            obs_date TEXT NOT NULL,
-            value REAL,
-            source TEXT NOT NULL
+def iso_date(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, dt.datetime):
+        return value.date().isoformat()
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    if isinstance(value, str):
+        value = value.strip()
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y"):
+            try:
+                return dt.datetime.strptime(value, fmt).date().isoformat()
+            except ValueError:
+                pass
+    return None
+
+
+
+def to_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        txt = value.strip().replace(" ", "")
+        if not txt:
+            return None
+        if txt.count(",") == 1 and txt.count(".") >= 1:
+            txt = txt.replace(".", "").replace(",", ".")
+        elif txt.count(",") == 1 and txt.count(".") == 0:
+            txt = txt.replace(",", ".")
+        else:
+            txt = txt.replace(",", "")
+        try:
+            return float(txt)
+        except ValueError:
+            return None
+    return None
+
+
+
+def money(v: float | None) -> str:
+    if v is None:
+        return "—"
+    return f"Gs. {v:,.0f}".replace(",", ".")
+
+
+
+def pct(v: float | None) -> str:
+    if v is None:
+        return "—"
+    return f"{v:+.2f}%"
+
+
+
+def safe_div(n: float | None, d: float | None) -> float | None:
+    if n is None or d in (None, 0):
+        return None
+    return n / d
+
+
+
+def calculate_variation(current: float | None, previous: float | None) -> float | None:
+    if current is None or previous in (None, 0):
+        return None
+    return ((current - previous) / previous) * 100.0
+
+
+# =========================================================
+# BASE DE DATOS / MIGRACIONES
+# =========================================================
+def table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {r[1] for r in rows}
+
+
+
+def ensure_column(conn: sqlite3.Connection, table_name: str, definition: str, column_name: str) -> None:
+    cols = table_columns(conn, table_name)
+    if column_name not in cols:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {definition}")
+
+
+
+def init_db() -> None:
+    with db() as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE,
+                name TEXT NOT NULL,
+                normalized_name TEXT NOT NULL UNIQUE,
+                unit TEXT DEFAULT 'unidad',
+                weight REAL DEFAULT 1,
+                import_dependency REAL DEFAULT 0,
+                fx_sensitivity REAL DEFAULT 0,
+                fuel_sensitivity REAL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS locations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                region_type TEXT DEFAULT 'general',
+                market_type TEXT DEFAULT 'promedio',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS weekly_prices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                week_date TEXT NOT NULL,
+                product_id INTEGER NOT NULL,
+                location_id INTEGER,
+                price REAL NOT NULL,
+                source TEXT NOT NULL DEFAULT 'Excel',
+                imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(week_date, product_id, location_id),
+                FOREIGN KEY(product_id) REFERENCES products(id),
+                FOREIGN KEY(location_id) REFERENCES locations(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS indicators (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                value REAL,
+                variation REAL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS income_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                label TEXT NOT NULL DEFAULT 'Salario mínimo mensual',
+                monthly_income REAL NOT NULL DEFAULT 2798510,
+                household_size REAL DEFAULT 4,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS imports_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT,
+                status TEXT NOT NULL,
+                message TEXT,
+                rows_detected INTEGER DEFAULT 0,
+                rows_inserted INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
         )
-    """)
 
-    con.commit()
-    con.close()
+        # migraciones simples para bases viejas
+        ensure_column(conn, "products", "weight REAL DEFAULT 1", "weight")
+        ensure_column(conn, "products", "import_dependency REAL DEFAULT 0", "import_dependency")
+        ensure_column(conn, "products", "fx_sensitivity REAL DEFAULT 0", "fx_sensitivity")
+        ensure_column(conn, "products", "fuel_sensitivity REAL DEFAULT 0", "fuel_sensitivity")
+
+        wp_cols = table_columns(conn, "weekly_prices")
+        if "location_id" not in wp_cols:
+            conn.execute("ALTER TABLE weekly_prices ADD COLUMN location_id INTEGER")
+
+        # seed products
+        cur = conn.execute("SELECT COUNT(*) AS n FROM products")
+        if cur.fetchone()["n"] == 0:
+            for idx, item in enumerate(DEFAULT_PRODUCTS, start=1):
+                name, weight, import_dep, fx_sens, fuel_sens = item
+                conn.execute(
+                    """
+                    INSERT INTO products (
+                        code, name, normalized_name, unit, weight,
+                        import_dependency, fx_sensitivity, fuel_sensitivity, active
+                    )
+                    VALUES (?, ?, ?, 'unidad', ?, ?, ?, ?, 1)
+                    """,
+                    (
+                        f"P{idx:02d}",
+                        name,
+                        normalize_name(name),
+                        weight,
+                        import_dep,
+                        fx_sens,
+                        fuel_sens,
+                    ),
+                )
+        else:
+            # completa metadata faltante si existía la tabla anterior
+            for item in DEFAULT_PRODUCTS:
+                name, weight, import_dep, fx_sens, fuel_sens = item
+                conn.execute(
+                    """
+                    UPDATE products
+                    SET weight = COALESCE(weight, ?),
+                        import_dependency = COALESCE(import_dependency, ?),
+                        fx_sensitivity = COALESCE(fx_sensitivity, ?),
+                        fuel_sensitivity = COALESCE(fuel_sensitivity, ?)
+                    WHERE normalized_name = ?
+                    """,
+                    (weight, import_dep, fx_sens, fuel_sens, normalize_name(name)),
+                )
+
+        # seed locations
+        for code, name, region_type, market_type, active in DEFAULT_LOCATIONS:
+            conn.execute(
+                """
+                INSERT INTO locations (code, name, region_type, market_type, active)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(code) DO NOTHING
+                """,
+                (code, name, region_type, market_type, active),
+            )
+
+        # si hay registros viejos sin location_id, los pasa a NAT
+        nat = conn.execute("SELECT id FROM locations WHERE code='NAT'").fetchone()
+        if nat:
+            conn.execute(
+                "UPDATE weekly_prices SET location_id = ? WHERE location_id IS NULL",
+                (int(nat["id"]),),
+            )
+
+        # seed indicators
+        for key, label in DEFAULT_INDICATORS:
+            conn.execute(
+                "INSERT INTO indicators (key, label) VALUES (?, ?) ON CONFLICT(key) DO NOTHING",
+                (key, label),
+            )
+
+        # seed income settings
+        cur = conn.execute("SELECT COUNT(*) AS n FROM income_settings")
+        if cur.fetchone()["n"] == 0:
+            conn.execute(
+                "INSERT INTO income_settings (label, monthly_income, household_size) VALUES (?, ?, ?)",
+                ("Salario mínimo mensual", 2798510, 4),
+            )
 
 
-# crear tabla al iniciar
-ensure_external_table()
+@app.on_event("startup")
+def on_startup() -> None:
+    init_db()
 
 
-def get_last_external(series: str):
-    try:
-        con = db()
-        cur = con.cursor()
+# =========================================================
+# REPOSITORIO
+# =========================================================
+def fetch_products(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT id, code, name, unit, normalized_name, weight,
+               import_dependency, fx_sensitivity, fuel_sensitivity
+        FROM products
+        WHERE active=1
+        ORDER BY id
+        """
+    ).fetchall()
 
-        cur.execute("""
-            SELECT obs_date, value
-            FROM external_series
-            WHERE series=?
-            ORDER BY obs_date DESC
-            LIMIT 1
-        """, (series,))
 
-        row = cur.fetchone()
-        con.close()
-        return row
 
-    except Exception:
+def fetch_locations(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT id, code, name, region_type, market_type FROM locations WHERE active=1 ORDER BY id"
+    ).fetchall()
+
+
+
+def get_location_id(conn: sqlite3.Connection, code: str = "NAT") -> int:
+    row = conn.execute("SELECT id FROM locations WHERE code=?", (code,)).fetchone()
+    if not row:
+        raise ValueError(f"No existe la ubicación {code}")
+    return int(row["id"])
+
+
+
+def latest_week(conn: sqlite3.Connection, location_code: str = "NAT") -> str | None:
+    row = conn.execute(
+        """
+        SELECT MAX(w.week_date) AS d
+        FROM weekly_prices w
+        JOIN locations l ON l.id = w.location_id
+        WHERE l.code = ?
+        """,
+        (location_code,),
+    ).fetchone()
+    return row["d"] if row and row["d"] else None
+
+
+
+def previous_week(conn: sqlite3.Connection, week_date: str | None, location_code: str = "NAT") -> str | None:
+    if not week_date:
         return None
-
-def get_previous_external(series: str):
-    try:
-        con = db()
-        cur = con.cursor()
-
-        cur.execute("""
-            SELECT obs_date, value
-            FROM external_series
-            WHERE series=?
-            ORDER BY obs_date DESC
-            LIMIT 1 OFFSET 1
-        """, (series,))
-
-        row = cur.fetchone()
-        con.close()
-        return row
-
-    except Exception:
-        return None
-
-def get_external_by_date(series: str, obs_date: str):
-    try:
-        con = db()
-        cur = con.cursor()
-
-        cur.execute("""
-            SELECT value
-            FROM external_series
-            WHERE series=? AND obs_date=?
-            ORDER BY obs_date DESC
-            LIMIT 1
-        """, (series, obs_date))
-
-        row = cur.fetchone()
-        con.close()
-        return float(row[0]) if row else None
-
-    except Exception:
-        return None
+    row = conn.execute(
+        """
+        SELECT MAX(w.week_date) AS d
+        FROM weekly_prices w
+        JOIN locations l ON l.id = w.location_id
+        WHERE l.code = ? AND w.week_date < ?
+        """,
+        (location_code, week_date),
+    ).fetchone()
+    return row["d"] if row and row["d"] else None
 
 
-def pct_change(curr, prev):
-    if curr is None or prev is None:
-        return None
-    if prev == 0:
-        return None
-    return (curr - prev) / prev
 
-
-def semaforo_pct(p):
-    if p is None:
-        return ("GRIS", "Sin dato")
-    a = abs(p)
-    if a >= 0.05:
-        return ("ROJO", "Alerta")
-    if a >= 0.02:
-        return ("AMARILLO", "Vigilancia")
-    return ("VERDE", "Normal")
-
-
-def fmt_pct(x):
-    return "" if x is None else f"{x*100:.1f}%"
-
-
-def fmt_gs(x):
-    return "" if x is None else f"{int(round(x)):,}".replace(",", ".")
-
-def compute_week(week_date: str):
-    return compute_date(week_date)
-def latest_weeks(limit=30):
-    con=db(); cur=con.cursor()
-    cur.execute("SELECT DISTINCT week_date FROM observations ORDER BY week_date DESC LIMIT ?", (limit,))
-    weeks=[r[0] for r in cur.fetchall()]
-    con.close()
-    return list(reversed(weeks))
-
-def fmt_pct(x):
-    return "" if x is None else f"{x*100:.1f}%"
-
-def fmt_gs(x):
-    return "" if x is None else f"{int(round(x)):,}".replace(",", ".")
-
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-@app.get("/debug/external")
-def debug_external():
-    try:
-        con = db()
-        cur = con.cursor()
-
-        cur.execute("""
-            SELECT series, obs_date, value, source
-            FROM external_series
-            ORDER BY obs_date DESC
-            LIMIT 50
-        """)
-
-        rows = cur.fetchall()
-        con.close()
-
-        return {
-            "ok": True,
-            "count": len(rows),
-            "data": rows
+def indicators_map(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT key, label, value, variation, updated_at FROM indicators ORDER BY id"
+    ).fetchall()
+    return {
+        r["key"]: {
+            "label": r["label"],
+            "value": r["value"],
+            "variation": r["variation"],
+            "updated_at": r["updated_at"],
         }
+        for r in rows
+    }
 
-    except Exception as e:
-        return JSONResponse(
-            {"ok": False, "error": str(e)},
-            status_code=500
+
+
+def income_settings(conn: sqlite3.Connection) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT label, monthly_income, household_size, updated_at FROM income_settings ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if not row:
+        return {
+            "label": "Salario mínimo mensual",
+            "monthly_income": 2798510.0,
+            "household_size": 4.0,
+            "updated_at": None,
+        }
+    return dict(row)
+
+
+
+def summary_for_week(conn: sqlite3.Connection, week_date: str | None, location_code: str = "NAT") -> list[dict[str, Any]]:
+    if not week_date:
+        return []
+    prev = previous_week(conn, week_date, location_code)
+    rows = conn.execute(
+        """
+        SELECT
+            p.id,
+            p.name,
+            p.weight,
+            p.import_dependency,
+            p.fx_sensitivity,
+            p.fuel_sensitivity,
+            w.price AS current_price,
+            pw.price AS previous_price
+        FROM weekly_prices w
+        JOIN products p ON p.id = w.product_id
+        JOIN locations l ON l.id = w.location_id
+        LEFT JOIN weekly_prices pw
+               ON pw.product_id = w.product_id
+              AND pw.location_id = w.location_id
+              AND pw.week_date = ?
+        WHERE w.week_date = ?
+          AND l.code = ?
+        ORDER BY p.id
+        """,
+        (prev, week_date, location_code),
+    ).fetchall()
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        cp = float(r["current_price"]) if r["current_price"] is not None else None
+        pp = float(r["previous_price"]) if r["previous_price"] is not None else None
+        variation = calculate_variation(cp, pp)
+        out.append(
+            {
+                "product_id": int(r["id"]),
+                "name": r["name"],
+                "weight": float(r["weight"] or 1),
+                "import_dependency": float(r["import_dependency"] or 0),
+                "fx_sensitivity": float(r["fx_sensitivity"] or 0),
+                "fuel_sensitivity": float(r["fuel_sensitivity"] or 0),
+                "current_price": cp,
+                "previous_price": pp,
+                "variation": variation,
+            }
         )
-
-@app.get("/", response_class=HTMLResponse)
-def home(request: Request):
-    weeks = latest_weeks(12)
-    last = weeks[-1] if weeks else None
-    metrics = compute_date(last) if last else None
-
-    # USD / PYG
-    usd_date = None
-    usd_value = None
-    usd_prev_value = None
-    usd_change_24h = None
-    usd_semaforo = ("GRIS", "Sin dato")
-
-    try:
-        usd_last = get_last_external("USD_PYG")
-        if usd_last:
-            usd_date = usd_last[0]
-            usd_value = float(usd_last[1])
-
-            from datetime import date, timedelta
-            y = (date.fromisoformat(usd_date) - timedelta(days=1)).isoformat()
-            usd_prev_value = get_external_by_date("USD_PYG", y)
-
-            if usd_prev_value is not None:
-                usd_change_24h = pct_change(usd_value, usd_prev_value)
-                usd_semaforo = semaforo_pct(usd_change_24h)
-    except Exception:
-        pass
-
-    # Indicadores internacionales
-    def ext(series: str):
-        r = get_last_external(series)
-        return float(r[1]) if r and r[1] is not None else None
-
-    def ext_prev(series: str):
-        r = get_previous_external(series)
-        return float(r[1]) if r and r[1] is not None else None
-
-    brent_value = ext("BRENT_USD")
-    diesel_value = ext("DIESEL_USD")
-    gasoline_value = ext("GASOLINE_USD")
-    wheat_value = ext("WHEAT_USD")
-    corn_value = ext("CORN_USD")
-
-    brent_change = pct_change(brent_value, ext_prev("BRENT_USD"))
-    diesel_change = pct_change(diesel_value, ext_prev("DIESEL_USD"))
-    gasoline_change = pct_change(gasoline_value, ext_prev("GASOLINE_USD"))
-    wheat_change = pct_change(wheat_value, ext_prev("WHEAT_USD"))
-    corn_change = pct_change(corn_value, ext_prev("CORN_USD"))
-
-    tpl = env.get_template("dashboard.html")
-    return tpl.render(
-        weeks=weeks,
-        last=last,
-        m=metrics,
-        fmt_pct=fmt_pct,
-        fmt_gs=fmt_gs,
-        usd_date=usd_date,
-        usd_value=usd_value,
-        usd_prev_value=usd_prev_value,
-        usd_change_24h=usd_change_24h,
-        usd_semaforo=usd_semaforo,
-        brent_value=brent_value,
-        diesel_value=diesel_value,
-        gasoline_value=gasoline_value,
-        wheat_value=wheat_value,
-        corn_value=corn_value,
-        brent_change=brent_change,
-        diesel_change=diesel_change,
-        gasoline_change=gasoline_change,
-        wheat_change=wheat_change,
-        corn_change=corn_change
-    )
-
-@app.get("/ranking", response_class=HTMLResponse)
-def ranking_page(request: Request, obs_date: str = None):
-    weeks = latest_weeks(30)
-    last = obs_date or (weeks[-1] if weeks else None)
-    up, dn = top_movers(last, k=10) if last else ([],[])
-    tpl = env.get_template("ranking.html")
-    return tpl.render(last=last, weeks=weeks, up=up, dn=dn, fmt_pct=fmt_pct, fmt_gs=fmt_gs)
-
-@app.get("/carga", response_class=HTMLResponse)
-def carga(request: Request):
-    products = fetch_products()
-    tpl=env.get_template("carga.html")
-    return tpl.render(products=products)
-
-@app.get("/jobs/energy_fx")
-def job_energy_fx(token: str = ""):
-    if token != os.getenv("JOB_TOKEN", ""):
-        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-
-    try:
-        energy_fx_main()
-        return {"ok": True}
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
-@app.post("/carga")
-def carga_post(week_date: str = Form(...), geo: str = Form("AMA"), source: str = Form("Relevamiento"), data_json: str = Form(...)):
-    data=json.loads(data_json)
-    for code,val in data.items():
-        if val in (None,""): 
-            continue
-        upsert_obs(code, week_date, float(val), geo=geo, source=source)
-    compute_date(week_date)
-    return RedirectResponse("/", status_code=303)
-
-@app.post("/import_excel")
-def import_excel(file: UploadFile = File(...), source: str = Form("Excel")):
-    tmp = os.path.join(BASE_DIR, "_upload.xlsx")
-    with open(tmp, "wb") as f:
-        f.write(file.file.read())
-    wb = load_workbook(tmp, data_only=True)
-    if "Canasta_25" not in wb.sheetnames:
-        return JSONResponse({"ok": False, "error":"No se encontró la hoja Canasta_25"}, status_code=400)
-    sh = wb["Canasta_25"]
-    headers={}
-    for col in range(2, 2+25):
-        headers[col]=sh.cell(row=6, column=col).value
-    prods=fetch_products()
-    name_to_code={n.strip():c for c,n,_,_ in prods}
-    for r in range(8, 8+80):
-        wd=sh.cell(row=r, column=1).value
-        if not wd:
-            continue
-        if isinstance(wd, datetime.datetime): wd=wd.date()
-        if isinstance(wd, datetime.date): week_date=wd.isoformat()
-        else: week_date=str(wd)[:10]
-        for col,nm in headers.items():
-            if nm is None: continue
-            nm=str(nm).strip()
-            if nm not in name_to_code: 
-                continue
-            val=sh.cell(row=r, column=col).value
-            if val is None: 
-                continue
-            code=name_to_code[nm]
-            if code=="INF_ALIM" and val>1:
-                val=val/100.0
-            upsert_obs(code, week_date, val, source=source)
-        compute_date(week_date)
-    return RedirectResponse("/", status_code=303)
-
-
-@app.post("/import_excel")
-def import_excel(file: UploadFile = File(...), source: str = Form("Excel")):
-    tmp = os.path.join(BASE_DIR, "_upload.xlsx")
-    with open(tmp, "wb") as f:
-        f.write(file.file.read())
-    wb = load_workbook(tmp, data_only=True)
-    if "Canasta_25" not in wb.sheetnames:
-        return JSONResponse({"ok": False, "error":"No se encontró la hoja Canasta_25"}, status_code=400)
-    sh = wb["Canasta_25"]
-    headers={}
-    for col in range(2, 2+25):
-        headers[col]=sh.cell(row=6, column=col).value
-    prods=fetch_products()
-    name_to_code={n.strip():c for c,n,_,_ in prods}
-    for r in range(8, 8+80):
-        wd=sh.cell(row=r, column=1).value
-        if not wd:
-            continue
-        if isinstance(wd, datetime.datetime): wd=wd.date()
-        if isinstance(wd, datetime.date): week_date=wd.isoformat()
-        else: week_date=str(wd)[:10]
-        for col,nm in headers.items():
-            if nm is None: continue
-            nm=str(nm).strip()
-            if nm not in name_to_code: 
-                continue
-            val=sh.cell(row=r, column=col).value
-            if val is None: 
-                continue
-            code=name_to_code[nm]
-            if code=="INF_ALIM" and val>1:
-                val=val/100.0
-            upsert_obs(code, week_date, val, source=source)
-        compute_date(week_date)
-    return RedirectResponse("/", status_code=303)
-
-def top_movers(obs_date: str, scope_codes=None, k: int = 10):
-    """
-    Top alzas/bajas diarias por producto (requiere datos del día anterior).
-    """
-    d0=datetime.date.fromisoformat(obs_date)
-    d1=(d0-datetime.timedelta(days=1)).isoformat()
-    now=week_values(obs_date)
-    prev=week_values(d1)
-    moves=[]
-    for code,val in now.items():
-        if scope_codes and code not in scope_codes:
-            continue
-        b=prev.get(code)
-        if val is None or b in (None,0): 
-            continue
-        ch=val/b-1.0
-        moves.append((code, ch, val))
-    moves_sorted=sorted(moves, key=lambda x: x[1], reverse=True)
-    up=moves_sorted[:k]
-    dn=list(reversed(moves_sorted[-k:])) if len(moves_sorted)>=k else sorted(moves_sorted, key=lambda x:x[1])[:k]
-    # resolve names
-    prod_map={c:n for c,n,_,_ in fetch_products()}
-    up=[{"code":c,"name":prod_map.get(c,c),"change":ch,"value":v} for c,ch,v in up]
-    dn=[{"code":c,"name":prod_map.get(c,c),"change":ch,"value":v} for c,ch,v in dn]
-    return up,dn
-
-def make_chart_png_band(out_path, title, series, window=7, band_k=2.0):
-    """
-    Dibuja serie + promedio móvil (window) + banda (± k*std) sobre ventana.
-    """
-    if not series or len(series)<3:
-        return False
-    xs=[datetime.date.fromisoformat(d) for d,_ in series]
-    ys=np.array([float(v) for _,v in series], dtype=float)
-
-    # moving average / std
-    w=max(3, int(window))
-    ma=np.convolve(ys, np.ones(w)/w, mode="valid")
-    # rolling std (simple)
-    std=[]
-    for i in range(len(ys)-w+1):
-        std.append(np.std(ys[i:i+w]))
-    std=np.array(std)
-    xs2=xs[w-1:]
-
-    plt.figure()
-    plt.plot(xs, ys, label="Serie")
-    plt.plot(xs2, ma, label=f"MA({w})")
-    plt.plot(xs2, ma + band_k*std, label=f"+{band_k}σ")
-    plt.plot(xs2, ma - band_k*std, label=f"-{band_k}σ")
-    plt.title(title)
-    plt.xlabel("Fecha")
-    plt.ylabel("Valor")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=180)
-    plt.close()
-    return True
-
-def series_last_days(code: str, days: int = 30, geo: str = "AMA", source_like: str = None):
-    """
-    Devuelve lista de (date, value) para últimos N días del producto.
-    """
-    end = datetime.date.today()
-    start = end - datetime.timedelta(days=days)
-    con=db(); cur=con.cursor()
-    if source_like:
-        cur.execute("""SELECT week_date, value FROM observations
-                       WHERE product_code=? AND geo=? AND week_date>=? AND week_date<=? AND source LIKE ?
-                       ORDER BY week_date""", (code, geo, start.isoformat(), end.isoformat(), source_like))
-    else:
-        cur.execute("""SELECT week_date, value FROM observations
-                       WHERE product_code=? AND geo=? AND week_date>=? AND week_date<=?
-                       ORDER BY week_date""", (code, geo, start.isoformat(), end.isoformat()))
-    rows=cur.fetchall(); con.close()
-    return [(r[0], r[1]) for r in rows]
-
-def make_chart_png(out_path, title, series):
-    """
-    series: list of (date_str, value)
-    """
-    if not series:
-        return False
-    xs=[datetime.date.fromisoformat(d) for d,_ in series]
-    ys=[v for _,v in series]
-    plt.figure()
-    plt.plot(xs, ys)
-    plt.title(title)
-    plt.xlabel("Fecha")
-    plt.ylabel("Valor")
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=180)
-    plt.close()
-    return True
-
-def make_pdf(out_path, week_date):
-    m=compute_date(week_date)
-    c = pdfcanvas.Canvas(out_path, pagesize=A4)
-    w,h=A4
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(2*cm, h-2.2*cm, "Observatorio de Mercados y Precios del Paraguay (OMPP)")
-    c.setFont("Helvetica", 11)
-    c.drawString(2*cm, h-3.0*cm, f"Boletín Semanal — Semana {week_date} (corte al lunes)")
-    c.line(2*cm, h-3.2*cm, w-2*cm, h-3.2*cm)
-
-    y=h-4.2*cm
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(2*cm, y, "1. Resumen Ejecutivo")
-    y-=0.8*cm
-    c.setFont("Helvetica", 11)
-
-    lines=[
-        ("Índice Canasta (Alimentos+Hogar)", fmt_pct(m["index_canasta"])),
-        ("Índice Movilidad (nafta+diésel+pasaje)", fmt_pct(m["index_mobility"])),
-        ("Costilla vacuna — precio promedio (Gs/kg)", fmt_gs(m["costilla_avg"])),
-        ("Costilla — variación semanal", fmt_pct(m["costilla_weekly_change"])),
-    ]
-    for lab,val in lines:
-        c.drawString(2.2*cm, y, f"• {lab}: {val}")
-        y-=0.6*cm
-
-    y-=0.2*cm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(2.2*cm, y, "Semáforos")
-    y-=0.6*cm
-    c.setFont("Helvetica", 11)
-    alerts=m["alerts"]
-    if alerts:
-        for a in alerts:
-            c.drawString(2.2*cm, y, f"• {a['msg']}")
-            y-=0.55*cm
-    else:
-        c.drawString(2.2*cm, y, "• Sin alertas relevantes según umbrales actuales.")
-        y-=0.55*cm
-
-    y-=0.4*cm
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(2*cm, y, "2. Nota metodológica (versión MVP)")
-    y-=0.7*cm
-    c.setFont("Helvetica", 10)
-    note=("El Índice Canasta se calcula como el promedio simple de variaciones semanales de 18 ítems de alimentos y hogar "
-          "(cuando existen datos para semana actual y previa). El Índice Movilidad promedia nafta, diésel y pasaje. "
-          "Semáforos: Canasta ≥ +2% semanal; Movilidad ≥ +3% semanal; Costilla ≤ -5% o ≥ +8% semanal.")
-    for line in textwrap.wrap(note, width=105):
-        c.drawString(2*cm, y, line); y-=0.45*cm
-
-    c.showPage(); c.save()
-
-
-def _all_products():
-    # returns list of (code,name,category,unit)
-    return fetch_products()
-
-def _weekly_changes(week_date):
-    """Return list of dicts for all products with current value, previous value, and change."""
-    wd=datetime.date.fromisoformat(week_date)
-    prev=(wd-datetime.timedelta(days=7)).isoformat()
-    now=week_values(week_date)
-    prv=week_values(prev)
-    out=[]
-    for code,name,cat,unit in _all_products():
-        a=now.get(code)
-        b=prv.get(code)
-        ch=None
-        if a is not None and b not in (None,0):
-            ch=a/b-1.0
-        out.append({"code":code,"name":name,"category":cat,"unit":unit,"value":a,"prev":b,"change":ch})
     return out
 
-def make_pdf_ext(out_path, week_date):
-    """
-    Reporte institucional extendido (8–12 páginas aprox):
-    - Portada
-    - Resumen ejecutivo
-    - Diagnóstico Canasta (con tabla completa)
-    - Movilidad
-    - Carne (costilla)
-    - Metodología
-    - Anexos (definiciones y trazabilidad)
-    """
-    m=compute_date(week_date)
-    rows=_weekly_changes(week_date)
 
-    # Helpers
-    def pct(x): return "—" if x is None else f"{x*100:.1f}%"
-    def gs(x): 
-        if x is None: return "—"
-        try:
-            return f"{int(round(x)):,}".replace(",", ".")
-        except Exception:
-            return str(x)
 
-    # Categorize
-    alimentos = [r for r in rows if r["category"] in ("Alimentos","Harinas","Verduras","Lácteos","Carne","Hogar")]
-    movilidad = [r for r in rows if r["category"]=="Movilidad"]
-    macro = [r for r in rows if r["category"]=="Macro"]
-    bienes = [r for r in rows if r["category"]=="Bienes"]
+def ranking_for_week(conn: sqlite3.Connection, week_date: str | None, location_code: str = "NAT") -> list[dict[str, Any]]:
+    data = summary_for_week(conn, week_date, location_code)
+    ranked = [x for x in data if x["variation"] is not None]
+    ranked.sort(key=lambda x: x["variation"], reverse=True)
+    return ranked
 
-    # Top movers (exclude Macro for “precios”)
-    movers = [r for r in rows if r["change"] is not None and r["category"] not in ("Macro",)]
-    top_up = sorted(movers, key=lambda x: x["change"], reverse=True)[:5]
-    top_dn = sorted(movers, key=lambda x: x["change"])[:5]
 
-    c=pdfcanvas.Canvas(out_path, pagesize=A4)
-    W,H=A4
+# =========================================================
+# MÓDULO IPPS / ALERTAS / SOCIAL / TERRITORIAL
+# =========================================================
+def inflation_pressure(conn: sqlite3.Connection, location_code: str = "NAT") -> dict[str, Any]:
+    week = latest_week(conn, location_code)
+    items = summary_for_week(conn, week, location_code)
+    if not items:
+        return {
+            "week": week,
+            "location": location_code,
+            "ipps": None,
+            "level": "Sin datos",
+            "diffusion_rate": None,
+            "avg_increase": None,
+            "weighted_pressure": None,
+            "products_up": 0,
+            "products_down": 0,
+            "products_flat": 0,
+            "message": "No hay datos suficientes para calcular IPPS.",
+        }
 
-    def header(title, subtitle=None):
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(2*cm, H-1.7*cm, "Observatorio de Mercados y Precios del Paraguay (OMPP)")
-        c.setFont("Helvetica", 10)
-        c.drawRightString(W-2*cm, H-1.7*cm, f"Semana {week_date}")
-        c.line(2*cm, H-1.95*cm, W-2*cm, H-1.95*cm)
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(2*cm, H-2.8*cm, title)
-        if subtitle:
-            c.setFont("Helvetica", 11)
-            c.drawString(2*cm, H-3.45*cm, subtitle)
+    items_with_var = [x for x in items if x["variation"] is not None]
+    if not items_with_var:
+        return {
+            "week": week,
+            "location": location_code,
+            "ipps": None,
+            "level": "Sin base previa",
+            "diffusion_rate": None,
+            "avg_increase": None,
+            "weighted_pressure": None,
+            "products_up": 0,
+            "products_down": 0,
+            "products_flat": len(items),
+            "message": "Existe una sola semana o no hay semana previa comparable.",
+        }
 
-    def footer(page_num):
-        c.setFont("Helvetica", 9)
-        c.drawRightString(W-2*cm, 1.3*cm, f"Página {page_num}")
+    up = [x for x in items_with_var if x["variation"] > 0]
+    down = [x for x in items_with_var if x["variation"] < 0]
+    flat = [x for x in items_with_var if x["variation"] == 0]
+    total = len(items_with_var)
 
-    def draw_paragraph(x, y, text, width_chars=110, leading=0.45*cm, font="Helvetica", size=10):
-        c.setFont(font, size)
-        for line in textwrap.wrap(text, width=width_chars):
-            c.drawString(x, y, line)
-            y -= leading
-        return y
+    diffusion_rate = (len(up) / total) * 100 if total else None
+    avg_increase = sum(x["variation"] for x in up) / len(up) if up else 0.0
 
-    def draw_table(x, y, col_widths, headers, data_rows, row_h=0.6*cm, font_size=9):
-        # header
-        c.setFont("Helvetica-Bold", font_size)
-        c.setFillGray(0.95)
-        c.rect(x, y-row_h, sum(col_widths), row_h, fill=1, stroke=0)
-        c.setFillGray(0)
-        cx=x
-        for i,h in enumerate(headers):
-            c.drawString(cx+0.12*cm, y-row_h+0.18*cm, h)
-            cx += col_widths[i]
-        c.line(x, y-row_h, x+sum(col_widths), y-row_h)
-        y -= row_h
-        # rows
-        c.setFont("Helvetica", font_size)
-        for r in data_rows:
-            cx=x
-            for i,cell in enumerate(r):
-                c.drawString(cx+0.12*cm, y-row_h+0.18*cm, str(cell)[:60])
-                cx += col_widths[i]
-            y -= row_h
-            if y < 2.5*cm:
-                return y, True
-        return y, False
+    total_weight = sum(float(x["weight"] or 1) for x in items_with_var) or 1.0
+    weighted_pressure = sum(
+        max(float(x["variation"] or 0), 0) * float(x["weight"] or 1) for x in items_with_var
+    ) / total_weight
 
-    page=1
+    # IPPS simple y potente para gestión: difusión + intensidad + peso
+    ipps = (0.45 * (diffusion_rate or 0)) + (0.35 * avg_increase) + (0.20 * weighted_pressure)
 
-    # --- Page 1: Cover ---
-    c.setFont("Helvetica-Bold", 18)
-    c.drawString(2*cm, H-3.2*cm, "Reporte Institucional — Mercados y Precios")
-    c.setFont("Helvetica", 12)
-    c.drawString(2*cm, H-4.1*cm, "Observatorio de Mercados y Precios del Paraguay (OMPP)")
-    c.setFont("Helvetica", 11)
-    c.drawString(2*cm, H-5.0*cm, f"Semana de referencia (lunes): {week_date}")
-    c.setFont("Helvetica", 10)
-    c.drawString(2*cm, H-6.0*cm, "Documento técnico para uso institucional (MVP).")
-    c.line(2*cm, H-6.3*cm, W-2*cm, H-6.3*cm)
-
-    # Quick KPIs block
-    y=H-7.3*cm
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(2*cm, y, "Indicadores clave")
-    y-=0.8*cm
-    c.setFont("Helvetica", 11)
-    c.drawString(2.2*cm, y, f"• Índice Canasta (Alimentos+Hogar): {pct(m['index_canasta'])}")
-    y-=0.55*cm
-    c.drawString(2.2*cm, y, f"• Índice Movilidad (nafta+diésel+pasaje): {pct(m['index_mobility'])}")
-    y-=0.55*cm
-    c.drawString(2.2*cm, y, f"• Costilla vacuna (Gs/kg): {gs(m['costilla_avg'])}  |  Variación semanal: {pct(m['costilla_weekly_change'])}")
-    y-=0.75*cm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(2*cm, y, "Semáforos")
-    y-=0.6*cm
-    c.setFont("Helvetica", 10)
-    if m["alerts"]:
-        for a in m["alerts"][:6]:
-            c.drawString(2.2*cm, y, f"• {a['msg']}")
-            y-=0.45*cm
+    if ipps < 8:
+        level = "Normal"
+        color = "green"
+    elif ipps < 15:
+        level = "Presión"
+        color = "yellow"
     else:
-        c.drawString(2.2*cm, y, "• Sin alertas relevantes según umbrales actuales.")
-    footer(page)
-    c.showPage(); page += 1
+        level = "Alerta"
+        color = "red"
 
-    # --- Page 2: Executive summary ---
-    header("Resumen Ejecutivo", "Lectura rápida (1–2 minutos)")
-    y=H-4.3*cm
-    summary = (
-        "Este reporte presenta la evolución semanal de precios de la canasta familiar (25 ítems), "
-        "un módulo especializado de carne vacuna (con foco en costilla) y un panel de movilidad "
-        "(nafta, diésel y pasaje). Se incluyen señales simples (semáforos) para alertar presiones "
-        "de corto plazo."
-    )
-    y = draw_paragraph(2*cm, y, summary, width_chars=110, size=10)
+    message = {
+        "Normal": "La presión semanal luce contenida.",
+        "Presión": "Se observa una difusión relevante de aumentos que merece seguimiento.",
+        "Alerta": "La presión de precios es alta y requiere monitoreo prioritario.",
+    }[level]
 
-    y -= 0.3*cm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(2*cm, y, "Principales movimientos semanales")
-    y -= 0.6*cm
-
-    # top movers table
-    headers_t = ["Movimiento", "Producto", "Δ semanal", "Valor actual"]
-    data_t=[]
-    for r in top_up:
-        data_t.append(["Alza", r["name"], pct(r["change"]), gs(r["value"])])
-    for r in top_dn:
-        data_t.append(["Baja", r["name"], pct(r["change"]), gs(r["value"])])
-    colw=[2.2*cm, 8.6*cm, 2.6*cm, 3.8*cm]
-    y, _ = draw_table(2*cm, y, colw, headers_t, data_t, row_h=0.6*cm, font_size=9)
-
-    y -= 0.2*cm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(2*cm, y, "Lectura de semáforos (reglas simples)")
-    y -= 0.6*cm
-    c.setFont("Helvetica", 10)
-    c.drawString(2.2*cm, y, "• Canasta ≥ +2% semanal: presión de corto plazo.")
-    y -= 0.45*cm
-    c.drawString(2.2*cm, y, "• Movilidad ≥ +3% semanal: presión en costos de transporte/logística.")
-    y -= 0.45*cm
-    c.drawString(2.2*cm, y, "• Costilla ≤ -5% o ≥ +8% semanal: baja significativa o shock.")
-    footer(page)
-    c.showPage(); page += 1
-
-    # --- Page 3: Canasta overview ---
-    header("Canasta Familiar", "Índice, drivers y lectura sectorial")
-    y=H-4.3*cm
-    c.setFont("Helvetica", 10)
-    c.drawString(2*cm, y, f"Índice Canasta (Alimentos+Hogar) — variación semanal: {pct(m['index_canasta'])}")
-    y -= 0.6*cm
-
-    txt = (
-        "La canasta se analiza como un conjunto de precios sensibles del consumo diario. "
-        "El índice resume la variación semanal promedio (cuando existen datos para semana actual y previa)."
-    )
-    y = draw_paragraph(2*cm, y, txt, width_chars=110, size=10)
-
-    y -= 0.2*cm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(2*cm, y, "Tabla completa — Canasta (25 ítems)")
-    y -= 0.6*cm
-
-    # Prepare full table rows
-    full = []
-    for r in rows:
-        # show macro too but marked
-        full.append([
-            r["category"],
-            r["name"],
-            r["unit"],
-            gs(r["value"]) if r["unit"] != "% mensual" else (pct(r["value"]) if r["value"] is not None else "—"),
-            pct(r["change"]) if r["change"] is not None else "—"
-        ])
-    headers_full=["Categoría","Producto","Unidad","Valor","Δ semanal"]
-    colw=[2.8*cm, 7.2*cm, 2.4*cm, 3.0*cm, 2.8*cm]
-
-    # Draw across multiple pages if needed
-    while True:
-        y, needs_new = draw_table(2*cm, y, colw, headers_full, full, row_h=0.55*cm, font_size=8.5)
-        if not needs_new:
-            break
-        footer(page)
-        c.showPage(); page += 1
-        header("Canasta Familiar (continuación)")
-        y=H-4.0*cm
-        # remove rows already printed? We didn't track. Simple approach: redraw from start would repeat.
-        # We'll instead paginate manually by slicing.
-        break
-
-    # Manual pagination with slicing (redo properly)
-    # Re-render with pagination correctly:
-    c.showPage()
-    page += 1
-    # We'll do paginated rendering now
-    def paginated_table(title, headers, colw, data, start_page_title, start_y):
-        nonlocal page
-        i=0
-        while i < len(data):
-            header(start_page_title if i==0 else f"{start_page_title} (continuación)")
-            y=start_y
-            # header row
-            c.setFont("Helvetica-Bold", 11)
-            c.drawString(2*cm, y, title if i==0 else title + " (cont.)")
-            y -= 0.6*cm
-            # compute how many rows fit
-            # leaving bottom margin 2.5cm
-            rows_fit = int((y-2.5*cm)/(0.55*cm))
-            chunk = data[i:i+rows_fit]
-            y2, _ = draw_table(2*cm, y, colw, headers, chunk, row_h=0.55*cm, font_size=8.5)
-            footer(page)
-            c.showPage(); page += 1
-            i += rows_fit
-
-    paginated_table("Tabla completa — Canasta (25 ítems)", headers_full, colw, full, "Canasta Familiar", H-4.3*cm)
-
-    # After paginated_table, we already advanced one extra blank page; roll back by adding a new content page next
-    # We'll start mobility section on current page already created by showPage; so set page-1? To keep simple,
-    # we will just continue with next pages (it is ok if pages count goes 1 higher).
-    # We'll add next page content now.
-
-    # --- Movilidad section ---
-    header("Movilidad", "Combustibles + Pasaje")
-    y=H-4.3*cm
-    c.setFont("Helvetica", 10)
-    c.drawString(2*cm, y, f"Índice Movilidad — variación semanal: {pct(m['index_mobility'])}")
-    y -= 0.6*cm
-    y = draw_paragraph(2*cm, y, "La movilidad impacta costos logísticos y expectativas de inflación percibida.", width_chars=110, size=10)
-    y -= 0.2*cm
-    mob_rows=[]
-    for r in movilidad:
-        mob_rows.append([r["name"], r["unit"], gs(r["value"]), pct(r["change"]) if r["change"] is not None else "—"])
-    headers_m=["Indicador","Unidad","Valor","Δ semanal"]
-    colw_m=[7.8*cm, 2.8*cm, 3.2*cm, 2.8*cm]
-    y, needs = draw_table(2*cm, y, colw_m, headers_m, mob_rows, row_h=0.6*cm, font_size=9)
-    footer(page)
-    c.showPage(); page += 1
-
-    # --- Carne section ---
-    header("Carne Vacuna", "Módulo especializado — foco en costilla")
-    y=H-4.3*cm
-    c.setFont("Helvetica", 10)
-    c.drawString(2*cm, y, f"Costilla (Gs/kg): {gs(m['costilla_avg'])}  |  Variación semanal: {pct(m['costilla_weekly_change'])}")
-    y -= 0.7*cm
-    y = draw_paragraph(2*cm, y, "La carne vacuna es un precio socialmente sensible y funciona como indicador adelantado de percepción inflacionaria.", width_chars=110, size=10)
-    y -= 0.2*cm
-    # include some carne items and related
-    carne_rows=[]
-    for r in rows:
-        if r["category"]=="Carne":
-            carne_rows.append([r["name"], r["unit"], gs(r["value"]), pct(r["change"]) if r["change"] is not None else "—"])
-    headers_c=["Corte/Producto","Unidad","Valor","Δ semanal"]
-    colw_c=[7.8*cm, 2.8*cm, 3.2*cm, 2.8*cm]
-    y, _ = draw_table(2*cm, y, colw_c, headers_c, carne_rows, row_h=0.6*cm, font_size=9)
-
-    y -= 0.2*cm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(2*cm, y, "Lectura para gestión pública (MVP)")
-    y -= 0.6*cm
-    y = draw_paragraph(2*cm, y, "Cuando la costilla cae junto con señales de mayor oferta (faena) o menor demanda externa (exportación), puede anticiparse una baja adicional en mostrador. Este reporte MVP deja trazabilidad para ampliar el modelo con datos oficiales.", width_chars=110, size=10)
-    footer(page)
-    c.showPage(); page += 1
-
-    # --- Methodology ---
-    header("Metodología", "Definiciones, cálculo e integridad de datos")
-    y=H-4.3*cm
-    meth = (
-        "Fuentes: relevamiento propio (supermercados/carnicerías) e importación desde planilla Excel del Observatorio. "
-        "Unidad de tiempo: semanal (lunes). Índices: promedio simple de variaciones semanales de los ítems con datos "
-        "en semana actual y semana previa. Semáforos: reglas de umbral para alertas tempranas."
-    )
-    y = draw_paragraph(2*cm, y, meth, width_chars=110, size=10)
-
-    y -= 0.2*cm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(2*cm, y, "Trazabilidad (MVP)")
-    y -= 0.6*cm
-    y = draw_paragraph(2*cm, y, "Cada observación registra: producto, semana, valor, geografía y fuente. Esto permite auditoría y control de calidad.", width_chars=110, size=10)
-
-    y -= 0.2*cm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(2*cm, y, "Próximas mejoras sugeridas")
-    y -= 0.6*cm
-    improvements = [
-        "Desagregación por ciudad/departamento y ponderaciones por consumo.",
-        "Integración de fuentes oficiales (BCP/INE/SENACSA/PETROPAR) y comparación con relevamientos.",
-        "Modelo de transmisión de precios (ganado → mostrador) con rezagos.",
-        "Reporte gráfico ampliado (series y bandas) y anexos estadísticos."
-    ]
-    c.setFont("Helvetica", 10)
-    for it in improvements:
-        c.drawString(2.2*cm, y, f"• {it}")
-        y -= 0.45*cm
-    footer(page)
-    c.showPage(); page += 1
-
-    # --- Annex: full catalog ---
-    header("Anexos", "Catálogo de productos y unidades")
-    y=H-4.3*cm
-    cat_rows=[[code,name,cat,unit] for code,name,cat,unit in _all_products()]
-    headers_a=["Código","Producto","Categoría","Unidad"]
-    colw_a=[2.2*cm, 7.6*cm, 3.6*cm, 3.2*cm]
-    # paginate annex
-    i=0
-    while i < len(cat_rows):
-        if i>0:
-            header("Anexos (continuación)", "Catálogo de productos y unidades")
-            y=H-4.3*cm
-        rows_fit = int((y-2.5*cm)/(0.6*cm))
-        chunk=cat_rows[i:i+rows_fit]
-        y2, _ = draw_table(2*cm, y, colw_a, headers_a, chunk, row_h=0.6*cm, font_size=9)
-        footer(page)
-        c.showPage(); page += 1
-        i += rows_fit
-
-    c.save()
-
-@app.get("/reporte/pdf")
-def reporte_pdf(week_date: str):
-    out = os.path.join(BASE_DIR, f"boletin_{week_date}.pdf")
-    make_pdf(out, week_date)
-    return FileResponse(out, media_type="application/pdf", filename=os.path.basename(out))
+    return {
+        "week": week,
+        "location": location_code,
+        "ipps": round(ipps, 2),
+        "level": level,
+        "color": color,
+        "diffusion_rate": round(diffusion_rate, 2) if diffusion_rate is not None else None,
+        "avg_increase": round(avg_increase, 2) if avg_increase is not None else None,
+        "weighted_pressure": round(weighted_pressure, 2) if weighted_pressure is not None else None,
+        "products_up": len(up),
+        "products_down": len(down),
+        "products_flat": len(flat),
+        "message": message,
+    }
 
 
 
-@app.get("/reporte/pdf_ext")
-def reporte_pdf_ext(week_date: str):
-    out = os.path.join(BASE_DIR, f"reporte_institucional_extendido_{week_date}.pdf")
-    make_pdf_ext(out, week_date)
-    return FileResponse(out, media_type="application/pdf", filename=os.path.basename(out))
+def top_explanatory_pressures(conn: sqlite3.Connection) -> dict[str, Any]:
+    inds = indicators_map(conn)
+    usd_var = to_float(inds.get("usd_pyg", {}).get("variation")) or 0.0
+    diesel_var = to_float(inds.get("diesel", {}).get("variation")) or 0.0
+    gasolina_var = to_float(inds.get("gasolina", {}).get("variation")) or 0.0
+    brent_var = to_float(inds.get("brent", {}).get("variation")) or 0.0
+    trigo_var = to_float(inds.get("trigo", {}).get("variation")) or 0.0
+    maiz_var = to_float(inds.get("maiz", {}).get("variation")) or 0.0
 
-@app.get("/reporte/ppt_json")
-def reporte_ppt_json(week_date: str):
-    # MVP: entregamos JSON listo para convertir a PPT (luego agregamos conversor automático)
-    m=compute_date(week_date)
-    return JSONResponse(m)
+    fx_pressure = abs(usd_var)
+    fuel_pressure = (abs(diesel_var) + abs(gasolina_var) + abs(brent_var)) / 3 if any([diesel_var, gasolina_var, brent_var]) else 0.0
+    grain_pressure = (abs(trigo_var) + abs(maiz_var)) / 2 if any([trigo_var, maiz_var]) else 0.0
 
-@app.get("/config/alertas")
-def ver_config_alertas():
-    return get_alertas()
-
-@app.get("/config/fuentes")
-def ver_config_fuentes():
-    return load_json(os.path.join(CONFIG_DIR, "fuentes.json"), {})
-
-@app.get("/alertas/eventos")
-def alertas_eventos(limit: int = 50):
-    con=db(); cur=con.cursor()
-    cur.execute("""SELECT created_at, obs_date, product_code, scope, level, metric, change_value, message, whatsapp_sent
-                   FROM alerts_events ORDER BY id DESC LIMIT ?""", (limit,))
-    rows=cur.fetchall(); con.close()
-    return {"events":[
-        {"created_at":r[0],"obs_date":r[1],"product_code":r[2],"scope":r[3],"level":r[4],"metric":r[5],"change":r[6],"message":r[7],"whatsapp_sent":bool(r[8])}
-        for r in rows
-    ]}
-
-@app.post("/ingesta/once")
-def ingesta_once():
-    """
-    Ejecuta ingesta automática una vez (manual).
-    Nota: en despliegue institucional se protege con autenticación.
-    """
-    import subprocess, sys
-    p = subprocess.run([sys.executable, os.path.join(BASE_DIR, "ingest.py"), "--once"], capture_output=True, text=True)
-    return {"ok": p.returncode==0, "stdout": p.stdout[-4000:], "stderr": p.stderr[-2000:]}
+    return {
+        "fx_pressure": round(fx_pressure, 2),
+        "fuel_pressure": round(fuel_pressure, 2),
+        "grain_pressure": round(grain_pressure, 2),
+        "usd_variation": round(usd_var, 2),
+        "diesel_variation": round(diesel_var, 2),
+        "gasolina_variation": round(gasolina_var, 2),
+        "brent_variation": round(brent_var, 2),
+        "trigo_variation": round(trigo_var, 2),
+        "maiz_variation": round(maiz_var, 2),
+    }
 
 
-def make_pdf_real(out_path, obs_date):
-    """
-    Reporte Real (estilo institucional) con gráficos de series (últimos 30 días).
-    """
-    m=compute_date(obs_date)
-    c = pdfcanvas.Canvas(out_path, pagesize=A4)
-    W,H=A4
 
-    # Portada + KPIs
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(2*cm, H-2.2*cm, "OMPP — Reporte Real de Mercados y Precios")
-    c.setFont("Helvetica", 11)
-    c.drawString(2*cm, H-3.0*cm, f"Corte: {obs_date} | Frecuencia base: diaria | Moneda: Gs")
-    c.line(2*cm, H-3.2*cm, W-2*cm, H-3.2*cm)
+def generate_alerts(conn: sqlite3.Connection, location_code: str = "NAT") -> list[dict[str, Any]]:
+    week = latest_week(conn, location_code)
+    ranking = ranking_for_week(conn, week, location_code)
+    ipps = inflation_pressure(conn, location_code)
+    external = top_explanatory_pressures(conn)
+    alerts: list[dict[str, Any]] = []
 
-    y=H-4.2*cm
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(2*cm, y, "Resumen ejecutivo")
-    y-=0.8*cm
-    c.setFont("Helvetica", 11)
-    c.drawString(2.2*cm, y, f"• Índice Canasta (variación diaria): {fmt_pct(m['index_canasta'])}")
-    y-=0.55*cm
-    c.drawString(2.2*cm, y, f"• Índice Movilidad (variación diaria): {fmt_pct(m['index_mobility'])}")
-    y-=0.55*cm
-    c.drawString(2.2*cm, y, f"• Costilla (Gs/kg): {fmt_gs(m['costilla_avg'])} | Δ diaria: {fmt_pct(m['costilla_weekly_change'])}")
-    y-=0.75*cm
+    if ipps.get("level") == "Alerta":
+        alerts.append(
+            {
+                "type": "INFLATION_PRESSURE",
+                "severity": "ALTA",
+                "title": "Alerta por presión semanal de precios",
+                "detail": f"IPPS = {ipps.get('ipps')} en {location_code}. {ipps.get('message')}",
+                "week": week,
+            }
+        )
+    elif ipps.get("level") == "Presión":
+        alerts.append(
+            {
+                "type": "INFLATION_PRESSURE",
+                "severity": "MEDIA",
+                "title": "Presión relevante en precios",
+                "detail": f"IPPS = {ipps.get('ipps')} en {location_code}.",
+                "week": week,
+            }
+        )
 
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(2*cm, y, "Alertas (semáforo)")
-    y-=0.6*cm
-    c.setFont("Helvetica", 10)
-    alerts=m.get("alerts",[])
-    if alerts:
-        for a in alerts[:10]:
-            c.drawString(2.2*cm, y, f"• {a.get('msg','')}")
-            y-=0.45*cm
-            if y<2.5*cm:
-                break
-    else:
-        c.drawString(2.2*cm, y, "• Sin alertas rojas en la fecha de corte.")
-    c.showPage()
+    for row in ranking[:5]:
+        if (row.get("variation") or 0) >= 10:
+            risk = "ALTA" if row["import_dependency"] >= 0.5 or row["fuel_sensitivity"] >= 0.5 else "MEDIA"
+            alerts.append(
+                {
+                    "type": "PRODUCT_SPIKE",
+                    "severity": risk,
+                    "title": f"Aumento abrupto en {row['name']}",
+                    "detail": f"Variación semanal de {pct(row['variation'])}. Precio actual: {money(row['current_price'])}.",
+                    "week": week,
+                }
+            )
 
-    # Página de gráficos
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(2*cm, H-2.2*cm, "Evolución reciente (últimos 30 días)")
-    c.setFont("Helvetica", 10)
-    c.drawString(2*cm, H-2.9*cm, "Series para lectura rápida de presión de precios y movilidad.")
-    c.line(2*cm, H-3.1*cm, W-2*cm, H-3.1*cm)
+    if external["fx_pressure"] >= 2.5:
+        alerts.append(
+            {
+                "type": "FX_RISK",
+                "severity": "MEDIA",
+                "title": "Presión cambiaria relevante",
+                "detail": f"Variación USD/PYG: {pct(external['usd_variation'])}. Riesgo de traslado a importados.",
+                "week": week,
+            }
+        )
 
-    tmp_dir=os.path.join(BASE_DIR, "_tmp_charts")
-    os.makedirs(tmp_dir, exist_ok=True)
+    if external["fuel_pressure"] >= 3:
+        alerts.append(
+            {
+                "type": "FUEL_RISK",
+                "severity": "MEDIA",
+                "title": "Presión en combustibles y logística",
+                "detail": "El bloque combustible muestra variaciones relevantes con posible impacto transversal.",
+                "week": week,
+            }
+        )
 
-    charts = [
-        ("COSTILLA", "Costilla (Gs/kg)"),
-        ("NAFTA", "Nafta (Gs/litro)"),
-        ("PASAJE", "Pasaje transporte (Gs/viaje)")
-    ]
-    y=H-4.0*cm
-    for code, title in charts:
-        series = series_last_days(code, days=30)
-        out_png=os.path.join(tmp_dir, f"{code}_30d.png")
-        ok = make_chart_png(out_png, title, series)
-        if ok:
-            c.drawImage(out_png, 2*cm, y-7.2*cm, width=W-4*cm, height=6.8*cm, preserveAspectRatio=True, anchor='sw')
-            y -= 7.6*cm
-            if y < 3.0*cm:
-                c.showPage()
-                y = H-3.0*cm
-        else:
-            c.setFont("Helvetica", 10)
-            c.drawString(2*cm, y, f"(Sin datos para graficar: {title})")
-            y -= 0.8*cm
-
-    c.showPage()
-    c.save()
-
-@app.get("/reporte/pdf_real")
-def reporte_pdf_real(obs_date: str):
-    out = os.path.join(BASE_DIR, f"reporte_real_{obs_date}.pdf")
-    make_pdf_real(out, obs_date)
-    return FileResponse(out, media_type="application/pdf", filename=os.path.basename(out))
-
-
-def make_pptx(out_path, obs_date):
-    from pptx import Presentation
-    from pptx.util import Inches, Pt
-    from pptx.enum.text import PP_ALIGN
-    prs = Presentation()
-    m = compute_date(obs_date)
-
-    # Slide 1: Title
-    slide = prs.slides.add_slide(prs.slide_layouts[0])
-    slide.shapes.title.text = "OMPP — Reporte Real (Resumen)"
-    slide.placeholders[1].text = f"Corte: {obs_date}"
-
-    # Slide 2: KPIs
-    slide = prs.slides.add_slide(prs.slide_layouts[5])  # title only
-    slide.shapes.title.text = "Indicadores clave"
-    tx = slide.shapes.add_textbox(Inches(0.8), Inches(1.6), Inches(8.5), Inches(4.5)).text_frame
-    tx.word_wrap = True
-    p = tx.paragraphs[0]
-    p.text = f"Índice Canasta (Δ diaria): {fmt_pct(m['index_canasta'])}"
-    p.font.size = Pt(20)
-    for line in [
-        f"Índice Movilidad (Δ diaria): {fmt_pct(m['index_mobility'])}",
-        f"Costilla (Gs/kg): {fmt_gs(m['costilla_avg'])} | Δ diaria: {fmt_pct(m['costilla_weekly_change'])}",
-    ]:
-        pp = tx.add_paragraph()
-        pp.text = line
-        pp.font.size = Pt(20)
-
-    # Slide 3: Alerts
-    slide = prs.slides.add_slide(prs.slide_layouts[5])
-    slide.shapes.title.text = "Alertas (semáforo)"
-    tx = slide.shapes.add_textbox(Inches(0.8), Inches(1.6), Inches(8.5), Inches(4.8)).text_frame
-    tx.word_wrap = True
-    alerts = m.get("alerts", [])
     if not alerts:
-        tx.text = "Sin alertas rojas en la fecha de corte."
+        alerts.append(
+            {
+                "type": "STATUS",
+                "severity": "BAJA",
+                "title": "Sin alertas relevantes",
+                "detail": "No se detectan señales críticas con la información disponible.",
+                "week": week,
+            }
+        )
+
+    return alerts
+
+
+
+def social_pressure(conn: sqlite3.Connection, location_code: str = "NAT") -> dict[str, Any]:
+    week = latest_week(conn, location_code)
+    items = summary_for_week(conn, week, location_code)
+    income = income_settings(conn)
+
+    if not items:
+        return {
+            "week": week,
+            "location": location_code,
+            "basket_cost": None,
+            "monthly_income": income["monthly_income"],
+            "weekly_income": round(float(income["monthly_income"]) / 4.0, 2),
+            "basket_share_of_weekly_income": None,
+            "social_pressure_level": "Sin datos",
+            "message": "No hay datos suficientes para calcular presión social.",
+        }
+
+    # aproximación ejecutiva: costo agregado semanal de canasta observada
+    basket_cost = sum(float(x["current_price"] or 0) for x in items)
+    monthly_income = float(income["monthly_income"])
+    weekly_income = monthly_income / 4.0 if monthly_income else 0.0
+    share = (basket_cost / weekly_income) * 100 if weekly_income else None
+
+    if share is None:
+        level = "Sin datos"
+    elif share < 35:
+        level = "Baja"
+    elif share < 50:
+        level = "Media"
     else:
-        tx.text = alerts[0].get("msg","")
-        for a in alerts[1:10]:
-            tx.add_paragraph().text = a.get("msg","")
+        level = "Alta"
 
-    # Slide 4: Chart (Costilla 30d)
-    slide = prs.slides.add_slide(prs.slide_layouts[5])
-    slide.shapes.title.text = "Evolución reciente — Costilla (30 días)"
-    tmp_dir=os.path.join(BASE_DIR, "_tmp_charts")
-    os.makedirs(tmp_dir, exist_ok=True)
-    out_png=os.path.join(tmp_dir, "COSTILLA_30d.png")
-    make_chart_png(out_png, "Costilla (Gs/kg)", series_last_days("COSTILLA", 30))
-    slide.shapes.add_picture(out_png, Inches(0.8), Inches(1.7), width=Inches(8.5))
+    message = {
+        "Baja": "La canasta observada luce manejable respecto al ingreso de referencia.",
+        "Media": "La canasta absorbe una fracción importante del ingreso semanal.",
+        "Alta": "La canasta observada ejerce una presión alta sobre el ingreso semanal.",
+        "Sin datos": "Sin información suficiente.",
+    }[level]
 
-    prs.save(out_path)
-
-@app.get("/reporte/pptx")
-def reporte_pptx(obs_date: str):
-    out = os.path.join(BASE_DIR, f"reporte_real_{obs_date}.pptx")
-    make_pptx(out, obs_date)
-    return FileResponse(out, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        filename=os.path.basename(out))
+    return {
+        "week": week,
+        "location": location_code,
+        "basket_cost": round(basket_cost, 2),
+        "monthly_income": round(monthly_income, 2),
+        "weekly_income": round(weekly_income, 2),
+        "basket_share_of_weekly_income": round(share, 2) if share is not None else None,
+        "social_pressure_level": level,
+        "message": message,
+    }
 
 
-def make_observatorio_pdf(out_path, obs_date: str):
-    """
-    Reporte Nivel Observatorio (6–10 págs aprox, según datos):
-    - Portada
-    - Tablero: KPIs + semáforos + ranking
-    - Gráficos: canasta, movilidad, costilla, combustibles
-    - Anexo: eventos de alertas y evidencia de fuentes
-    """
-    m=compute_date(obs_date)
-    c=pdfcanvas.Canvas(out_path, pagesize=A4)
-    W,H=A4
 
-    # Page 1: Cover
-    c.setFont("Helvetica-Bold", 18)
-    c.drawString(2*cm, H-2.4*cm, "OMPP — Reporte Observatorio")
-    c.setFont("Helvetica", 12)
-    c.drawString(2*cm, H-3.2*cm, "Sistema con Reporte Real — Inteligencia de Negocios de Precios")
-    c.setFont("Helvetica", 11)
-    c.drawString(2*cm, H-4.0*cm, f"Fecha de corte: {obs_date}")
-    c.line(2*cm, H-4.3*cm, W-2*cm, H-4.3*cm)
-    c.setFont("Helvetica", 10)
-    c.drawString(2*cm, H-5.1*cm, "Contenido: tablero, ranking, series recientes, alertas, y evidencia de fuentes.")
-    c.showPage()
+def territorial_prices(conn: sqlite3.Connection, product_name: str | None = None, week_date: str | None = None) -> dict[str, Any]:
+    week = week_date or latest_week(conn, "NAT")
+    if not week:
+        return {"week": week, "items": []}
 
-    # Page 2: Dashboard
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(2*cm, H-2.2*cm, "1. Tablero Diario")
-    c.setFont("Helvetica", 10)
-    c.drawString(2*cm, H-2.9*cm, "Indicadores clave y señales tempranas.")
-    c.line(2*cm, H-3.1*cm, W-2*cm, H-3.1*cm)
+    params: list[Any] = [week]
+    product_filter = ""
+    if product_name:
+        product_filter = " AND p.normalized_name = ? "
+        params.append(normalize_name(product_name))
 
-    y=H-4.0*cm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(2*cm, y, "KPIs")
-    y-=0.7*cm
-    c.setFont("Helvetica", 11)
-    c.drawString(2.2*cm, y, f"• Índice Canasta (Δ diaria): {fmt_pct(m['index_canasta'])} | (Δ semanal): {fmt_pct(m['weekly']['canasta'])}")
-    y-=0.55*cm
-    c.drawString(2.2*cm, y, f"• Índice Movilidad (Δ diaria): {fmt_pct(m['index_mobility'])} | (Δ semanal): {fmt_pct(m['weekly']['movilidad'])}")
-    y-=0.55*cm
-    c.drawString(2.2*cm, y, f"• Costilla (Gs/kg): {fmt_gs(m['costilla_avg'])} | Δ diaria: {fmt_pct(m['costilla_weekly_change'])} | (Δ semanal): {fmt_pct(m['weekly']['costilla'])}")
-    y-=0.75*cm
+    rows = conn.execute(
+        f"""
+        SELECT l.code AS location_code, l.name AS location_name, p.name AS product_name, w.price
+        FROM weekly_prices w
+        JOIN products p ON p.id = w.product_id
+        JOIN locations l ON l.id = w.location_id
+        WHERE w.week_date = ?
+        {product_filter}
+        ORDER BY p.name, l.id
+        """,
+        params,
+    ).fetchall()
 
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(2*cm, y, "Semáforos / Alertas")
-    y-=0.6*cm
-    c.setFont("Helvetica", 10)
-    alerts=m.get("alerts",[])
-    if alerts:
-        for a in alerts[:12]:
-            c.drawString(2.2*cm, y, f"• {a.get('msg','')}")
-            y-=0.45*cm
-            if y<6*cm: break
-    else:
-        c.drawString(2.2*cm, y, "• Sin alertas rojas en la fecha de corte.")
-        y-=0.45*cm
-
-    # Ranking
-    up,dn = top_movers(obs_date, k=6)
-    y-=0.3*cm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(2*cm, y, "Ranking (variación diaria)")
-    y-=0.6*cm
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(2*cm, y, "Top alzas")
-    c.drawString(W/2, y, "Top bajas")
-    y-=0.45*cm
-    c.setFont("Helvetica", 9.5)
-    for i in range(6):
-        if i < len(up):
-            c.drawString(2*cm, y, f"{i+1}. {up[i]['name']}  {fmt_pct(up[i]['change'])}")
-        if i < len(dn):
-            c.drawString(W/2, y, f"{i+1}. {dn[i]['name']}  {fmt_pct(dn[i]['change'])}")
-        y-=0.42*cm
-    c.showPage()
-
-    # Pages: Charts
-    tmp_dir=os.path.join(BASE_DIR, "_tmp_charts")
-    os.makedirs(tmp_dir, exist_ok=True)
-
-    chart_specs = [
-        ("COSTILLA", "Costilla (Gs/kg)", 7),
-        ("NAFTA", "Nafta (Gs/litro)", 7),
-        ("DIESEL", "Diésel (Gs/litro)", 7),
-        ("PASAJE", "Pasaje (Gs/viaje)", 7),
+    items = [
+        {
+            "location_code": r["location_code"],
+            "location_name": r["location_name"],
+            "product_name": r["product_name"],
+            "price": float(r["price"]),
+        }
+        for r in rows
     ]
-    # Add index charts using computed snapshots (from computed table)
-    def series_index_last_days(field, days=45):
-        end=datetime.date.today()
-        start=end-datetime.timedelta(days=days)
-        con=db(); cur=con.cursor()
-        cur.execute(f"""SELECT week_date, {field} FROM computed
-                        WHERE week_date>=? AND week_date<=?
-                        ORDER BY week_date""", (start.isoformat(), end.isoformat()))
-        rows=cur.fetchall(); con.close()
-        return [(r[0], r[1]) for r in rows if r[1] is not None]
+    return {"week": week, "items": items}
 
-    idx_can = series_index_last_days("index_canasta", 45)
-    idx_mob = series_index_last_days("index_mobility", 45)
 
-    # Page: index charts
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(2*cm, H-2.2*cm, "2. Series de Índices (45 días)")
-    c.setFont("Helvetica", 10)
-    c.drawString(2*cm, H-2.9*cm, "Variación diaria (serie de snapshots).")
-    c.line(2*cm, H-3.1*cm, W-2*cm, H-3.1*cm)
+# =========================================================
+# IMPORTACIÓN EXCEL SEGURA
+# =========================================================
+class ImportResult(BaseModel):
+    ok: bool
+    filename: str
+    rows_detected: int = 0
+    rows_inserted: int = 0
+    weeks_detected: int = 0
+    products_detected: int = 0
+    location_code: str = "NAT"
+    message: str
 
-    y=H-4.0*cm
-    for series, title in [(idx_can, "Índice Canasta (Δ diaria)"), (idx_mob, "Índice Movilidad (Δ diaria)")]:
-        out_png=os.path.join(tmp_dir, re.sub(r"[^A-Za-z0-9]+","_",title)+".png")
-        ok = make_chart_png_band(out_png, title, series, window=7, band_k=2.0)
-        if ok:
-            c.drawImage(out_png, 2*cm, y-7.2*cm, width=W-4*cm, height=6.8*cm, preserveAspectRatio=True, anchor='sw')
-            y -= 7.6*cm
-            if y < 3.2*cm:
-                c.showPage()
-                y = H-3.0*cm
-    c.showPage()
 
-    # Page(s): product charts
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(2*cm, H-2.2*cm, "3. Series de Productos Sensibles (30 días)")
-    c.setFont("Helvetica", 10)
-    c.drawString(2*cm, H-2.9*cm, "Tendencias, promedio móvil y bandas.")
-    c.line(2*cm, H-3.1*cm, W-2*cm, H-3.1*cm)
 
-    y=H-4.0*cm
-    for code,title,w in chart_specs:
-        series=series_last_days(code, days=30)
-        out_png=os.path.join(tmp_dir, f"{code}_band.png")
-        ok=make_chart_png_band(out_png, title, series, window=w, band_k=2.0)
-        if ok:
-            c.drawImage(out_png, 2*cm, y-7.2*cm, width=W-4*cm, height=6.8*cm, preserveAspectRatio=True, anchor='sw')
-            y -= 7.6*cm
-            if y < 3.2*cm:
-                c.showPage()
-                y = H-3.0*cm
-        else:
-            c.setFont("Helvetica", 10)
-            c.drawString(2*cm, y, f"(Sin datos suficientes para: {title})")
-            y -= 0.7*cm
-    c.showPage()
+def ensure_product(conn: sqlite3.Connection, raw_name: str, col_index: int) -> int:
+    nname = normalize_name(raw_name)
+    if not nname:
+        raise ValueError(f"Encabezado vacío en columna {col_index}")
 
-    # Page: Alerts events + Evidence
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(2*cm, H-2.2*cm, "4. Evidencia y trazabilidad")
-    c.setFont("Helvetica", 10)
-    c.drawString(2*cm, H-2.9*cm, "Alertas registradas y archivos descargados (hash).")
-    c.line(2*cm, H-3.1*cm, W-2*cm, H-3.1*cm)
+    row = conn.execute("SELECT id FROM products WHERE normalized_name = ?", (nname,)).fetchone()
+    if row:
+        return int(row["id"])
 
-    y=H-4.0*cm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(2*cm, y, "Eventos de alertas (últimos 15)")
-    y-=0.6*cm
-    con=db(); cur=con.cursor()
-    cur.execute("""SELECT obs_date, product_code, level, message FROM alerts_events ORDER BY id DESC LIMIT 15""")
-    events=cur.fetchall()
-    cur.execute("""SELECT source_key, fetched_at, sha256 FROM raw_source_files ORDER BY id DESC LIMIT 10""")
-    raws=cur.fetchall()
-    con.close()
+    count = conn.execute("SELECT COUNT(*) AS n FROM products").fetchone()["n"]
+    code = f"P{int(count) + 1:02d}"
+    cur = conn.execute(
+        """
+        INSERT INTO products (code, name, normalized_name, unit, weight, import_dependency, fx_sensitivity, fuel_sensitivity, active)
+        VALUES (?, ?, ?, 'unidad', 1, 0.20, 0.20, 0.20, 1)
+        """,
+        (code, raw_name.strip(), nname),
+    )
+    return int(cur.lastrowid)
 
-    c.setFont("Helvetica", 9.5)
-    if not events:
-        c.drawString(2.2*cm, y, "Sin eventos registrados.")
-        y-=0.45*cm
+
+
+def parse_canasta_excel(conn: sqlite3.Connection, excel_path: Path, source: str, location_code: str = "NAT") -> ImportResult:
+    wb = load_workbook(excel_path, data_only=True)
+    if "Canasta_25" not in wb.sheetnames:
+        raise ValueError("No se encontró la hoja 'Canasta_25'.")
+
+    location_id = get_location_id(conn, location_code)
+    sh = wb["Canasta_25"]
+
+    # Encabezados esperados en fila 6, columnas B:Z
+    product_map: dict[int, int] = {}
+    detected_products = 0
+    for col in range(2, 27):
+        header = sh.cell(row=6, column=col).value
+        if header is None or str(header).strip() == "":
+            continue
+        product_id = ensure_product(conn, str(header), col)
+        product_map[col] = product_id
+        detected_products += 1
+
+    if detected_products == 0:
+        raise ValueError("No se detectaron encabezados de productos en la fila 6 (columnas B:Z).")
+
+    staged_rows: list[tuple[str, int, int, float, str]] = []
+    weeks: set[str] = set()
+
+    for r in range(8, (sh.max_row or 0) + 1):
+        raw_week = sh.cell(row=r, column=1).value
+        week_date = iso_date(raw_week)
+        if not week_date:
+            continue
+
+        row_has_data = False
+        for col, product_id in product_map.items():
+            raw_value = sh.cell(row=r, column=col).value
+            price = to_float(raw_value)
+            if price is None:
+                continue
+            if price < 0:
+                raise ValueError(f"Precio negativo detectado en fila {r}, columna {col}.")
+            staged_rows.append((week_date, product_id, location_id, price, source))
+            row_has_data = True
+
+        if row_has_data:
+            weeks.add(week_date)
+
+    if not staged_rows:
+        raise ValueError("El Excel fue leído, pero no se detectaron precios válidos para importar.")
+
+    inserted = 0
+    for week_date, product_id, loc_id, price, src in staged_rows:
+        conn.execute(
+            """
+            INSERT INTO weekly_prices (week_date, product_id, location_id, price, source)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(week_date, product_id, location_id)
+            DO UPDATE SET
+                price = excluded.price,
+                source = excluded.source,
+                imported_at = CURRENT_TIMESTAMP
+            """,
+            (week_date, product_id, loc_id, price, src),
+        )
+        inserted += 1
+
+    return ImportResult(
+        ok=True,
+        filename=excel_path.name,
+        rows_detected=len(staged_rows),
+        rows_inserted=inserted,
+        weeks_detected=len(weeks),
+        products_detected=detected_products,
+        location_code=location_code,
+        message="Importación realizada correctamente sin borrar histórico previo.",
+    )
+
+
+# =========================================================
+# HTML DASHBOARD
+# =========================================================
+def render_dashboard(conn: sqlite3.Connection, message: str = "") -> str:
+    week = latest_week(conn, "NAT")
+    summary = summary_for_week(conn, week, "NAT")
+    ranking = ranking_for_week(conn, week, "NAT")[:10]
+    inds = indicators_map(conn)
+    ipps = inflation_pressure(conn, "NAT")
+    social = social_pressure(conn, "NAT")
+    alerts = generate_alerts(conn, "NAT")[:5]
+
+    last_import = conn.execute(
+        "SELECT filename, status, message, created_at FROM imports_log ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+    rows_html = ""
+    for row in summary:
+        var_class = "up" if (row["variation"] or 0) > 0 else "down" if (row["variation"] or 0) < 0 else "flat"
+        rows_html += f"""
+        <tr>
+            <td>{row['name']}</td>
+            <td>{money(row['current_price'])}</td>
+            <td>{money(row['previous_price'])}</td>
+            <td class="{var_class}">{pct(row['variation'])}</td>
+        </tr>
+        """
+
+    ranking_html = ""
+    for idx, row in enumerate(ranking, start=1):
+        ranking_html += f"""
+        <tr>
+            <td>{idx}</td>
+            <td>{row['name']}</td>
+            <td>{pct(row['variation'])}</td>
+            <td>{money(row['current_price'])}</td>
+        </tr>
+        """
+
+    if not rows_html:
+        rows_html = '<tr><td colspan="4">No hay datos cargados todavía.</td></tr>'
+    if not ranking_html:
+        ranking_html = '<tr><td colspan="4">No hay ranking disponible todavía.</td></tr>'
+
+    def ind_card(key: str) -> str:
+        obj = inds.get(key, {})
+        value = obj.get("value")
+        variation = obj.get("variation")
+        label = obj.get("label", key)
+        return f"""
+        <div class="card metric">
+            <div class="metric-title">{label}</div>
+            <div class="metric-value">{value if value is not None else '—'}</div>
+            <div class="metric-sub">Variación: {pct(variation)}</div>
+        </div>
+        """
+
+    import_info = ""
+    if last_import:
+        import_info = (
+            f"Última importación: {last_import['created_at']} · {last_import['filename'] or 's/archivo'} · "
+            f"{last_import['status']} · {last_import['message'] or ''}"
+        )
+
+    alerts_html = "".join(
+        f"<li><strong>{a['severity']}</strong> — {a['title']}: {a['detail']}</li>" for a in alerts
+    ) or "<li>Sin alertas.</li>"
+
+    latest_week_label = week or "Sin datos"
+    ipps_level = ipps.get("level", "Sin datos")
+    ipps_value = ipps.get("ipps") if ipps.get("ipps") is not None else "—"
+
+    return f"""
+    <!doctype html>
+    <html lang="es">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>{APP_TITLE}</title>
+        <style>
+            :root {{
+                --bg: #f4f7fb;
+                --card: #ffffff;
+                --primary: #113a69;
+                --primary-2: #285f9d;
+                --text: #1f2937;
+                --muted: #6b7280;
+                --border: #dbe3ee;
+                --up: #0f8a43;
+                --down: #b42318;
+                --flat: #6b7280;
+            }}
+            * {{ box-sizing: border-box; }}
+            body {{ margin: 0; font-family: Arial, Helvetica, sans-serif; background: var(--bg); color: var(--text); }}
+            .wrap {{ max-width: 1280px; margin: 0 auto; padding: 24px; }}
+            .hero {{ background: linear-gradient(135deg, var(--primary), var(--primary-2)); color: white; padding: 24px; border-radius: 18px; }}
+            .hero h1 {{ margin: 0 0 8px 0; font-size: 28px; }}
+            .hero p {{ margin: 0; opacity: .95; }}
+            .grid {{ display: grid; gap: 16px; }}
+            .grid-2 {{ grid-template-columns: 1.15fr .85fr; }}
+            .grid-3 {{ grid-template-columns: repeat(3, 1fr); }}
+            .grid-4 {{ grid-template-columns: repeat(4, 1fr); }}
+            .grid-6 {{ grid-template-columns: repeat(6, 1fr); }}
+            .card {{ background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 18px; box-shadow: 0 6px 18px rgba(17,58,105,.06); }}
+            .card h2 {{ margin: 0 0 14px; font-size: 20px; color: var(--primary); }}
+            .toolbar {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }}
+            .btn {{ display: inline-block; border: 0; padding: 10px 14px; border-radius: 10px; background: var(--primary); color: white; text-decoration: none; cursor: pointer; font-weight: 700; }}
+            .btn.alt {{ background: #e8eef7; color: var(--primary); }}
+            .file {{ padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: white; }}
+            table {{ width: 100%; border-collapse: collapse; }}
+            th, td {{ text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); font-size: 14px; }}
+            th {{ color: var(--primary); background: #f8fbff; }}
+            .metric {{ min-height: 128px; }}
+            .metric-title {{ font-size: 13px; color: var(--muted); margin-bottom: 8px; }}
+            .metric-value {{ font-size: 28px; font-weight: 800; color: var(--primary); }}
+            .metric-sub {{ margin-top: 8px; color: var(--muted); font-size: 13px; }}
+            .muted {{ color: var(--muted); font-size: 13px; }}
+            .up {{ color: var(--up); font-weight: 700; }}
+            .down {{ color: var(--down); font-weight: 700; }}
+            .flat {{ color: var(--flat); font-weight: 700; }}
+            .notice {{ margin: 14px 0 0; padding: 12px 14px; border-radius: 12px; background: #eef6ff; border: 1px solid #cfe0f5; color: var(--primary); }}
+            ul.alerts {{ padding-left: 18px; margin: 0; }}
+            ul.alerts li {{ margin: 8px 0; }}
+            @media (max-width: 1100px) {{
+                .grid-6 {{ grid-template-columns: repeat(3, 1fr); }}
+                .grid-4 {{ grid-template-columns: repeat(2, 1fr); }}
+                .grid-2 {{ grid-template-columns: 1fr; }}
+            }}
+            @media (max-width: 700px) {{
+                .grid-6, .grid-4, .grid-3 {{ grid-template-columns: 1fr; }}
+                .wrap {{ padding: 14px; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="wrap">
+            <div class="hero">
+                <h1>OMPP Sistema con Reporte Real — Dashboard</h1>
+                <p>Observatorio de precios, presión inflacionaria, riesgo y monitoreo social.</p>
+            </div>
+
+            {f'<div class="notice">{message}</div>' if message else ''}
+
+            <div class="grid grid-2" style="margin-top:16px;">
+                <div class="card">
+                    <h2>Herramientas</h2>
+                    <div class="toolbar" style="margin-bottom:12px;">
+                        <a class="btn alt" href="/ranking">Ver Ranking</a>
+                        <a class="btn alt" href="/report/pdf">Descargar reporte PDF</a>
+                        <a class="btn alt" href="/backup.csv">Exportar CSV</a>
+                    </div>
+                    <form action="/import_excel" method="post" enctype="multipart/form-data">
+                        <div class="toolbar">
+                            <label class="file">
+                                Cargar datos semanales
+                                <input type="file" name="file" accept=".xlsx,.xlsm" required />
+                            </label>
+                            <input type="hidden" name="source" value="Excel" />
+                            <input type="hidden" name="location_code" value="NAT" />
+                            <button class="btn" type="submit">Importar Excel (Canasta_25)</button>
+                        </div>
+                    </form>
+                    <p class="muted" style="margin-top:12px;">Última semana disponible: <strong>{latest_week_label}</strong></p>
+                    <p class="muted">{import_info}</p>
+                </div>
+
+                <div class="card">
+                    <h2>Indicadores Internacionales</h2>
+                    <div class="grid grid-3">
+                        {ind_card('usd_pyg')}
+                        {ind_card('brent')}
+                        {ind_card('diesel')}
+                        {ind_card('gasolina')}
+                        {ind_card('trigo')}
+                        {ind_card('maiz')}
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-4" style="margin-top:16px;">
+                <div class="card metric">
+                    <div class="metric-title">IPPS</div>
+                    <div class="metric-value">{ipps_value}</div>
+                    <div class="metric-sub">Nivel: {ipps_level}</div>
+                </div>
+                <div class="card metric">
+                    <div class="metric-title">Productos con suba</div>
+                    <div class="metric-value">{ipps.get('products_up', 0)}</div>
+                    <div class="metric-sub">Difusión: {pct(ipps.get('diffusion_rate')) if ipps.get('diffusion_rate') is not None else '—'}</div>
+                </div>
+                <div class="card metric">
+                    <div class="metric-title">Costo canasta observada</div>
+                    <div class="metric-value">{money(social.get('basket_cost'))}</div>
+                    <div class="metric-sub">Ingreso semanal ref.: {money(social.get('weekly_income'))}</div>
+                </div>
+                <div class="card metric">
+                    <div class="metric-title">Presión social</div>
+                    <div class="metric-value">{social.get('social_pressure_level', '—')}</div>
+                    <div class="metric-sub">Participación en ingreso: {pct(social.get('basket_share_of_weekly_income')) if social.get('basket_share_of_weekly_income') is not None else '—'}</div>
+                </div>
+            </div>
+
+            <div class="grid grid-2" style="margin-top:16px;">
+                <div class="card">
+                    <h2>Precios semanales</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Producto</th>
+                                <th>Semana actual</th>
+                                <th>Semana previa</th>
+                                <th>Variación</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {rows_html}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="card">
+                    <h2>Ranking de variaciones</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Producto</th>
+                                <th>Variación</th>
+                                <th>Precio actual</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {ranking_html}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="grid grid-2" style="margin-top:16px;">
+                <div class="card">
+                    <h2>Alertas tempranas</h2>
+                    <ul class="alerts">{alerts_html}</ul>
+                </div>
+                <div class="card">
+                    <h2>API del Observatorio</h2>
+                    <table>
+                        <tbody>
+                            <tr><td>/api/summary</td><td>Resumen semanal</td></tr>
+                            <tr><td>/api/ranking</td><td>Ranking semanal</td></tr>
+                            <tr><td>/api/inflation_pressure</td><td>IPPS</td></tr>
+                            <tr><td>/api/alerts</td><td>Alertas</td></tr>
+                            <tr><td>/api/territorial_prices</td><td>Precios por territorio</td></tr>
+                            <tr><td>/api/social_pressure</td><td>Presión sobre ingreso</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
+# =========================================================
+# ENDPOINTS HTML
+# =========================================================
+@app.get("/", response_class=HTMLResponse)
+def home() -> HTMLResponse:
+    with db() as conn:
+        return HTMLResponse(render_dashboard(conn))
+
+
+@app.post("/import_excel", response_class=HTMLResponse)
+async def import_excel(
+    file: UploadFile = File(...),
+    source: str = Form(DEFAULT_SOURCE),
+    location_code: str = Form("NAT"),
+) -> HTMLResponse:
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No se recibió archivo.")
+
+    ext = Path(file.filename).suffix.lower()
+    if ext not in {".xlsx", ".xlsm"}:
+        raise HTTPException(status_code=400, detail="Formato no soportado. Usa .xlsx o .xlsm")
+
+    safe_name = f"{dt.datetime.now():%Y%m%d_%H%M%S}_{Path(file.filename).name}"
+    save_path = UPLOAD_DIR / safe_name
+    content = await file.read()
+    save_path.write_bytes(content)
+
+    with db() as conn:
+        try:
+            result = parse_canasta_excel(conn, save_path, source, location_code=location_code)
+            conn.execute(
+                """
+                INSERT INTO imports_log (filename, status, message, rows_detected, rows_inserted)
+                VALUES (?, 'OK', ?, ?, ?)
+                """,
+                (result.filename, result.message, result.rows_detected, result.rows_inserted),
+            )
+            message = (
+                f"Importación correcta: {result.rows_inserted} registros, "
+                f"{result.weeks_detected} semanas, {result.products_detected} productos, ubicación {result.location_code}."
+            )
+            return HTMLResponse(render_dashboard(conn, message=message))
+        except Exception as e:
+            conn.execute(
+                """
+                INSERT INTO imports_log (filename, status, message, rows_detected, rows_inserted)
+                VALUES (?, 'ERROR', ?, 0, 0)
+                """,
+                (safe_name, str(e)),
+            )
+            return HTMLResponse(render_dashboard(conn, message=f"Error al importar: {e}"), status_code=400)
+
+
+@app.get("/ranking", response_class=HTMLResponse)
+def ranking_view() -> HTMLResponse:
+    with db() as conn:
+        week = latest_week(conn, "NAT")
+        ranking = ranking_for_week(conn, week, "NAT")
+        rows = "".join(
+            f"<tr><td>{i}</td><td>{r['name']}</td><td>{pct(r['variation'])}</td><td>{money(r['current_price'])}</td><td>{money(r['previous_price'])}</td></tr>"
+            for i, r in enumerate(ranking, start=1)
+        )
+        if not rows:
+            rows = '<tr><td colspan="5">No hay ranking disponible todavía.</td></tr>'
+        html = f"""
+        <!doctype html>
+        <html lang="es"><head><meta charset="utf-8"><title>Ranking</title>
+        <style>
+            body{{font-family:Arial;background:#f4f7fb;padding:24px;color:#1f2937}}
+            .card{{max-width:1100px;margin:auto;background:#fff;border:1px solid #dbe3ee;border-radius:16px;padding:18px}}
+            a{{text-decoration:none;color:#113a69;font-weight:bold}}
+            table{{width:100%;border-collapse:collapse;margin-top:12px}}
+            th,td{{padding:10px;border-bottom:1px solid #dbe3ee;text-align:left}}
+            th{{background:#f8fbff;color:#113a69}}
+        </style></head>
+        <body><div class="card">
+            <p><a href="/">← Volver al dashboard</a></p>
+            <h1>Ranking de variaciones</h1>
+            <p>Semana analizada: <strong>{week or 'Sin datos'}</strong></p>
+            <table>
+                <thead><tr><th>#</th><th>Producto</th><th>Variación</th><th>Precio actual</th><th>Precio previo</th></tr></thead>
+                <tbody>{rows}</tbody>
+            </table>
+        </div></body></html>
+        """
+        return HTMLResponse(html)
+
+
+# =========================================================
+# API
+# =========================================================
+@app.get("/api/summary")
+def api_summary(location_code: str = "NAT") -> JSONResponse:
+    with db() as conn:
+        week = latest_week(conn, location_code)
+        return JSONResponse({"week": week, "location": location_code, "items": summary_for_week(conn, week, location_code)})
+
+
+@app.get("/api/ranking")
+def api_ranking(location_code: str = "NAT") -> JSONResponse:
+    with db() as conn:
+        week = latest_week(conn, location_code)
+        return JSONResponse({"week": week, "location": location_code, "items": ranking_for_week(conn, week, location_code)})
+
+
+@app.get("/api/inflation_pressure")
+def api_inflation_pressure(location_code: str = "NAT") -> JSONResponse:
+    with db() as conn:
+        return JSONResponse(inflation_pressure(conn, location_code))
+
+
+@app.get("/api/alerts")
+def api_alerts(location_code: str = "NAT") -> JSONResponse:
+    with db() as conn:
+        return JSONResponse({"location": location_code, "items": generate_alerts(conn, location_code)})
+
+
+@app.get("/api/territorial_prices")
+def api_territorial_prices(product: str | None = None, week_date: str | None = None) -> JSONResponse:
+    with db() as conn:
+        return JSONResponse(territorial_prices(conn, product_name=product, week_date=week_date))
+
+
+@app.get("/api/social_pressure")
+def api_social_pressure(location_code: str = "NAT") -> JSONResponse:
+    with db() as conn:
+        return JSONResponse(social_pressure(conn, location_code))
+
+
+@app.post("/api/indicators")
+async def api_update_indicators(request: Request) -> JSONResponse:
+    payload = await request.json()
+    allowed = {"usd_pyg", "brent", "diesel", "gasolina", "trigo", "maiz"}
+    updated = []
+    with db() as conn:
+        for key, value in payload.items():
+            if key not in allowed or not isinstance(value, dict):
+                continue
+            conn.execute(
+                """
+                UPDATE indicators
+                SET value = ?, variation = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE key = ?
+                """,
+                (to_float(value.get("value")), to_float(value.get("variation")), key),
+            )
+            updated.append(key)
+    return JSONResponse({"ok": True, "updated": updated})
+
+
+@app.post("/api/income_settings")
+async def api_income_settings(request: Request) -> JSONResponse:
+    payload = await request.json()
+    monthly_income = to_float(payload.get("monthly_income"))
+    household_size = to_float(payload.get("household_size")) or 4
+    label = str(payload.get("label") or "Salario mínimo mensual")
+    if monthly_income is None or monthly_income <= 0:
+        raise HTTPException(status_code=400, detail="monthly_income debe ser un número mayor a 0")
+
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO income_settings (label, monthly_income, household_size) VALUES (?, ?, ?)",
+            (label, monthly_income, household_size),
+        )
+    return JSONResponse({"ok": True, "message": "Parámetros sociales actualizados."})
+
+
+@app.post("/api/territorial_price")
+async def api_add_territorial_price(request: Request) -> JSONResponse:
+    payload = await request.json()
+    week_date = iso_date(payload.get("week_date"))
+    product_name = str(payload.get("product_name") or "").strip()
+    location_code = str(payload.get("location_code") or "NAT").strip().upper()
+    price = to_float(payload.get("price"))
+    source = str(payload.get("source") or "manual")
+
+    if not week_date or not product_name or price is None:
+        raise HTTPException(status_code=400, detail="week_date, product_name y price son obligatorios")
+
+    with db() as conn:
+        location_id = get_location_id(conn, location_code)
+        product_id = ensure_product(conn, product_name, 0)
+        conn.execute(
+            """
+            INSERT INTO weekly_prices (week_date, product_id, location_id, price, source)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(week_date, product_id, location_id)
+            DO UPDATE SET price=excluded.price, source=excluded.source, imported_at=CURRENT_TIMESTAMP
+            """,
+            (week_date, product_id, location_id, price, source),
+        )
+    return JSONResponse({"ok": True, "message": "Precio territorial guardado."})
+
+
+@app.get("/backup.csv")
+def backup_csv() -> Response:
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT w.week_date, l.code AS location_code, l.name AS location_name,
+                   p.code, p.name, p.unit, w.price, w.source, w.imported_at
+            FROM weekly_prices w
+            JOIN products p ON p.id = w.product_id
+            JOIN locations l ON l.id = w.location_id
+            ORDER BY w.week_date DESC, l.id ASC, p.id ASC
+            """
+        ).fetchall()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["week_date", "location_code", "location_name", "code", "product", "unit", "price", "source", "imported_at"])
+    for r in rows:
+        writer.writerow([
+            r["week_date"], r["location_code"], r["location_name"], r["code"],
+            r["name"], r["unit"], r["price"], r["source"], r["imported_at"]
+        ])
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="ompp_backup.csv"'},
+    )
+
+
+# =========================================================
+# PDF
+# =========================================================
+@app.get("/report/pdf")
+def report_pdf() -> FileResponse:
+    with db() as conn:
+        week = latest_week(conn, "NAT")
+        summary = summary_for_week(conn, week, "NAT")
+        ranking = ranking_for_week(conn, week, "NAT")[:10]
+        ipps = inflation_pressure(conn, "NAT")
+        social = social_pressure(conn, "NAT")
+        alerts = generate_alerts(conn, "NAT")[:5]
+
+    temp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    temp_pdf.close()
+
+    doc = SimpleDocTemplate(
+        temp_pdf.name,
+        pagesize=A4,
+        rightMargin=1.7 * cm,
+        leftMargin=1.7 * cm,
+        topMargin=1.7 * cm,
+        bottomMargin=1.5 * cm,
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "TitleOMPP",
+        parent=styles["Title"],
+        textColor=colors.HexColor("#113A69"),
+        fontSize=18,
+        leading=22,
+        spaceAfter=10,
+    )
+    normal = styles["BodyText"]
+
+    elements = []
+    elements.append(Paragraph("OMPP — Reporte Semanal de Canasta Básica", title_style))
+    elements.append(Paragraph(f"Semana de referencia: <b>{week or 'Sin datos'}</b>", normal))
+    elements.append(Paragraph(f"Fecha de emisión: <b>{dt.datetime.now():%d/%m/%Y %H:%M}</b>", normal))
+    elements.append(Paragraph(f"IPPS: <b>{ipps.get('ipps') if ipps.get('ipps') is not None else '—'}</b> · Nivel: <b>{ipps.get('level', 'Sin datos')}</b>", normal))
+    elements.append(Paragraph(f"Presión social: <b>{social.get('social_pressure_level', 'Sin datos')}</b> · Participación de canasta en ingreso semanal: <b>{pct(social.get('basket_share_of_weekly_income')) if social.get('basket_share_of_weekly_income') is not None else '—'}</b>", normal))
+    elements.append(Spacer(1, 0.4 * cm))
+
+    table_data = [["Producto", "Precio actual", "Precio previo", "Variación"]]
+    if summary:
+        for row in summary:
+            table_data.append([row["name"], money(row["current_price"]), money(row["previous_price"]), pct(row["variation"])])
     else:
-        for e in events:
-            c.drawString(2.2*cm, y, f"{e[0]} | {e[2]} | {e[1] or '-'} | {e[3][:78]}")
-            y-=0.42*cm
-            if y<7*cm: break
+        table_data.append(["No hay datos", "—", "—", "—"])
 
-    y-=0.4*cm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(2*cm, y, "Descargas automáticas (últimos 10)")
-    y-=0.6*cm
-    c.setFont("Helvetica", 9.5)
-    if not raws:
-        c.drawString(2.2*cm, y, "Sin descargas registradas.")
+    tbl = Table(table_data, repeatRows=1, colWidths=[6.5 * cm, 3.2 * cm, 3.2 * cm, 2.6 * cm])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#113A69")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D0D7E2")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F7FAFE")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(tbl)
+    elements.append(Spacer(1, 0.5 * cm))
+
+    rank_data = [["#", "Producto", "Variación"]]
+    if ranking:
+        for idx, row in enumerate(ranking, start=1):
+            rank_data.append([str(idx), row["name"], pct(row["variation"])])
     else:
-        for r in raws:
-            c.drawString(2.2*cm, y, f"{r[0]} | {r[1][:19]} | {r[2][:16]}…")
-            y-=0.42*cm
-            if y<2.8*cm: break
+        rank_data.append(["—", "Sin ranking", "—"])
 
-    c.showPage()
-    c.save()
+    rank_tbl = Table(rank_data, repeatRows=1, colWidths=[1.2 * cm, 10.3 * cm, 3.5 * cm])
+    rank_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2D5F8B")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D0D7E2")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F7FAFE")]),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
 
-@app.get("/reporte/observatorio_pdf")
-def reporte_observatorio_pdf(obs_date: str):
-    out=os.path.join(BASE_DIR, f"reporte_observatorio_{obs_date}.pdf")
-    make_observatorio_pdf(out, obs_date)
-    return FileResponse(out, media_type="application/pdf", filename=os.path.basename(out))
+    elements.append(Paragraph("Top 10 variaciones semanales", styles["Heading2"]))
+    elements.append(rank_tbl)
+    elements.append(Spacer(1, 0.4 * cm))
+    elements.append(Paragraph("Alertas tempranas", styles["Heading2"]))
+    for a in alerts:
+        elements.append(Paragraph(f"• <b>{a['severity']}</b> — {a['title']}: {a['detail']}", normal))
+
+    doc.build(elements)
+    filename = f"reporte_ompp_{week or 'sin_datos'}.pdf"
+    return FileResponse(temp_pdf.name, media_type="application/pdf", filename=filename)
 
 
-def make_observatorio_pptx(out_path, obs_date: str):
-    from pptx import Presentation
-    from pptx.util import Inches, Pt
-    prs=Presentation()
-    m=compute_date(obs_date)
-    up,dn=top_movers(obs_date, k=8)
+# =========================================================
+# HEALTH / JOB
+# =========================================================
+@app.get("/jobs/import_daily")
+def import_daily(token: str = "") -> JSONResponse:
+    if not JOB_TOKEN or token != JOB_TOKEN:
+        raise HTTPException(status_code=403, detail="Token inválido")
+    return JSONResponse({"ok": True, "message": "Job activo. Configura aquí tu importación automática segura."})
 
-    # Title
-    s=prs.slides.add_slide(prs.slide_layouts[0])
-    s.shapes.title.text="OMPP — Reporte Observatorio"
-    s.placeholders[1].text=f"Corte: {obs_date}"
 
-    # KPI slide
-    s=prs.slides.add_slide(prs.slide_layouts[5])
-    s.shapes.title.text="Tablero: KPIs"
-    tf=s.shapes.add_textbox(Inches(0.8), Inches(1.6), Inches(8.6), Inches(4.7)).text_frame
-    tf.word_wrap=True
-    tf.text=f"Índice Canasta (Δ diaria): {fmt_pct(m['index_canasta'])} | (Δ semanal): {fmt_pct(m['weekly']['canasta'])}"
-    for line in [
-        f"Índice Movilidad (Δ diaria): {fmt_pct(m['index_mobility'])} | (Δ semanal): {fmt_pct(m['weekly']['movilidad'])}",
-        f"Costilla (Gs/kg): {fmt_gs(m['costilla_avg'])} | Δ diaria: {fmt_pct(m['costilla_weekly_change'])} | (Δ semanal): {fmt_pct(m['weekly']['costilla'])}",
-    ]:
-        p=tf.add_paragraph(); p.text=line
+@app.get("/health")
+def health() -> JSONResponse:
+    with db() as conn:
+        nat_week = latest_week(conn, "NAT")
+        count = conn.execute("SELECT COUNT(*) AS n FROM weekly_prices").fetchone()["n"]
+        return JSONResponse({
+            "ok": True,
+            "latest_week": nat_week,
+            "rows": count,
+            "ipps": inflation_pressure(conn, "NAT"),
+            "social": social_pressure(conn, "NAT"),
+        })
 
-    # Ranking slide
-    s=prs.slides.add_slide(prs.slide_layouts[5])
-    s.shapes.title.text="Ranking diario (Top alzas / bajas)"
-    left=s.shapes.add_textbox(Inches(0.7), Inches(1.6), Inches(4.4), Inches(5.0)).text_frame
-    right=s.shapes.add_textbox(Inches(5.0), Inches(1.6), Inches(4.4), Inches(5.0)).text_frame
-    left.text="Top alzas"
-    for r in up:
-        left.add_paragraph().text=f"{r['name']}  {fmt_pct(r['change'])}"
-    right.text="Top bajas"
-    for r in dn:
-        right.add_paragraph().text=f"{r['name']}  {fmt_pct(r['change'])}"
 
-    # Alerts slide
-    s=prs.slides.add_slide(prs.slide_layouts[5])
-    s.shapes.title.text="Alertas (semáforo)"
-    tf=s.shapes.add_textbox(Inches(0.8), Inches(1.6), Inches(8.6), Inches(4.7)).text_frame
-    alerts=m.get("alerts",[])
-    tf.text=alerts[0].get("msg","Sin alertas rojas") if alerts else "Sin alertas rojas"
-    for a in alerts[1:12]:
-        tf.add_paragraph().text=a.get("msg","")
+# =========================================================
+# EJECUCIÓN LOCAL
+# =========================================================
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=True)
 
-    # Chart slides
-    tmp_dir=os.path.join(BASE_DIR, "_tmp_charts")
-    os.makedirs(tmp_dir, exist_ok=True)
-
-    def add_chart_slide(title, code):
-        s=prs.slides.add_slide(prs.slide_layouts[5])
-        s.shapes.title.text=title
-        out_png=os.path.join(tmp_dir, f"{code}_ppt.png")
-        make_chart_png_band(out_png, title, series_last_days(code, 30), window=7, band_k=2.0)
-        if os.path.exists(out_png):
-            s.shapes.add_picture(out_png, Inches(0.8), Inches(1.7), width=Inches(8.5))
-
-    for code,title in [("COSTILLA","Costilla (30 días)"),("NAFTA","Nafta (30 días)"),("PASAJE","Pasaje (30 días)")]:
-        add_chart_slide(title, code)
-
-    prs.save(out_path)
-
-@app.get("/reporte/observatorio_pptx")
-def reporte_observatorio_pptx(obs_date: str):
-    out=os.path.join(BASE_DIR, f"reporte_observatorio_{obs_date}.pptx")
-    make_observatorio_pptx(out, obs_date)
-    return FileResponse(out, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        filename=os.path.basename(out))
