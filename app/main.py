@@ -457,24 +457,23 @@ def fetch_usd_pyg_bcp() -> dict[str, float | str | None]:
         resp.raise_for_status()
         html = resp.text
 
-        # Busca la fila del dólar estadounidense y toma el último número,
-        # que corresponde al valor en guaraníes.
+        # Patrón más simple y más robusto para la línea del dólar
         match = re.search(
-            r"D[ÓO]LAR\s+ESTADOUNIDENSE.*?USD\s+1,0000\s+([0-9]{1,3}(?:\.[0-9]{3})*,[0-9]{2})",
+            r"D[ÓO]LAR\s+ESTADOUNIDENSE\s+USD\s+1,0000\s+([0-9.,]+)",
             html,
-            re.IGNORECASE | re.DOTALL,
+            re.IGNORECASE,
         )
 
         if not match:
             return {"value": None, "variation": None, "source": "BCP"}
 
-        raw_value = match.group(1)
+        raw_value = match.group(1).strip()
         value = float(raw_value.replace(".", "").replace(",", "."))
 
         return {
             "value": value,
             "variation": None,
-            "source": "BCP"
+            "source": "BCP",
         }
 
     except Exception:
