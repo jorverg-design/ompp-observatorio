@@ -24,24 +24,39 @@ def find_column(df: pd.DataFrame, candidates: list[str]) -> Optional[str]:
     return None
 
 
-def pick_sheet(xls: pd.ExcelFile) -> str:
-    preferred = ["Canasta_25", "Carga_Semanal", "Hoja1", "Sheet1"]
-    for name in preferred:
-        if name in xls.sheet_names:
-            return name
-    return xls.sheet_names[0]
+def week_sort_key(week: str) -> int:
+    try:
+        year, w = week.split("-W")
+        return int(year) * 100 + int(w)
+    except Exception:
+        return -1
 
 
-def load_data() -> pd.DataFrame:
-    if not DATA_FILE.exists():
-        raise FileNotFoundError(f"No se encontró {DATA_FILE.name}")
+def parse_week(value: object) -> Optional[str]:
+    text = str(value or "").strip()
 
-    xls = pd.ExcelFile(DATA_FILE)
-    sheet = pick_sheet(xls)
-    df = pd.read_excel(DATA_FILE, sheet_name=sheet)
+    if not text:
+        return None
 
+    if "-W" in text:
+        return text
+
+    # fechas tipo 20/03/2026 o 2026-03-20
+    dt = pd.to_datetime(text, errors="coerce", dayfirst=True)
+    if pd.isna(dt):
+        return None
+
+    iso = dt.isocalendar()
+    return f"{int(iso.year)}-W{int(iso.week):02d}"
+
+
+def load_canasta25_sheet(xls: pd.ExcelFile) -> Optional[pd.DataFrame]:
+    if "Canasta_25" not in xls.sheet_names:
+        return None
+
+    df = pd.read_excel(DATA_FILE, sheet_name="Canasta_25")
     if df.empty:
-        raise ValueError("La hoja está vacía")
+        return None
 
     week_col = find_column(df, ["semana", "week"])
     city_col = find_column(df, ["ciudad", "city"])
@@ -50,41 +65,113 @@ def load_data() -> pd.DataFrame:
     channel_col = find_column(df, ["canal", "channel"])
     datetime_col = find_column(df, ["fecha_hora", "datetime", "date_time", "fecha"])
 
-    missing = [name for name, col in {
-        "semana": week_col,
-        "ciudad": city_col,
-        "producto": product_col,
-        "precio": price_col,
-    }.items() if col is None]
-
-    if missing:
-        raise ValueError(f"Faltan columnas obligatorias: {', '.join(missing)}")
+    if not all([week_col, city_col, product_col, price_col]):
+        return None
 
     work = pd.DataFrame({
-        "week": df[week_col],
-        "city": df[city_col],
-        "product": df[product_col],
+        "week": df[week_col].astype(str).str.strip(),
+        "city": df[city_col].astype(str).str.strip(),
+        "product": df[product_col].astype(str).str.strip(),
         "price": pd.to_numeric(df[price_col], errors="coerce"),
     })
 
-    work["channel"] = df[channel_col] if channel_col else "General"
+    work["channel"] = df[channel_col].astype(str).str.strip() if channel_col else "General"
     work["datetime"] = pd.to_datetime(df[datetime_col], errors="coerce") if datetime_col else pd.NaT
 
     work = work.dropna(subset=["week", "city", "product", "price"]).copy()
-    work["week"] = work["week"].astype(str).str.strip()
-    work["city"] = work["city"].astype(str).str.strip()
-    work["product"] = work["product"].astype(str).str.strip()
-    work["channel"] = work["channel"].astype(str).str.strip()
-
+    work = work[work["week"] != ""]
+    work = work[work["city"] != ""]
+    work = work[work["product"] != ""]
     return work
 
 
-def week_sort_key(week: str) -> int:
-    try:
-        year, w = week.split("-W")
-        return int(year) * 100 + int(w)
-    except Exception:
-        return -1
+def load_carga_semanal_sheet(xls: pd.ExcelFile) -> Optional[pd.DataFrame]:
+    if "Carga_Semanal" not in xls.sheet_names:
+        return None
+
+    raw = pd.read_excel(DATA_FILE, sheet_name="Carga_Semanal", header=None)
+    if raw.empty:
+        return None
+
+    header_row_idx = None
+    date_col_idx = None
+
+    for idx in range(min(15, len(raw))):
+        row_vals = [norm_text(v) for v in raw.iloc[idx].tolist()]
+        for j, val in enumerate(row_vals):
+            if val in {"fecha_semana", "fecha", "semana", "week"}:
+                header_row_idx = idx
+                date_col_idx = j
+                break
+        if header_row_idx is not None:
+            break
+
+    if header_row_idx is None:
+        return None
+
+    headers = raw.iloc[header_row_idx].tolist()
+    data = raw.iloc[header_row_idx + 1:].copy()
+    data.columns = headers
+    data = data.dropna(how="all")
+
+    if data.empty:
+        return None
+
+    date_col = data.columns[date_col_idx]
+    product_cols = [c for c in data.columns if c != date_col and str(c).strip() != ""]
+
+    rows = []
+    default_city = "Asunción"
+
+    for _, r in data.iterrows():
+        week = parse_week(r[date_col])
+        if not week:
+            continue
+
+        for product in product_cols:
+            price = pd.to_numeric(r[product], errors="coerce")
+            if pd.isna(price):
+                continue
+
+            product_name = str(product).strip()
+            channel = "General"
+
+            if norm_text(product_name) == "tomate":
+                channel = "Minorista"
+
+            rows.append({
+                "week": week,
+                "city": default_city,
+                "product": product_name,
+                "price": float(price),
+                "channel": channel,
+                "datetime": pd.NaT,
+            })
+
+    if not rows:
+        return None
+
+    return pd.DataFrame(rows)
+
+
+def load_data() -> pd.DataFrame:
+    if not DATA_FILE.exists():
+        raise FileNotFoundError(f"No se encontró {DATA_FILE.name}")
+
+    xls = pd.ExcelFile(DATA_FILE)
+
+    df = load_canasta25_sheet(xls)
+    if df is not None and not df.empty:
+        return df
+
+    df = load_carga_semanal_sheet(xls)
+    if df is not None and not df.empty:
+        return df
+
+    raise ValueError(
+        "No se encontró una hoja utilizable. Usa 'Canasta_25' en formato largo "
+        "o 'Carga_Semanal' con fecha_semana y productos en columnas."
+    )
 
 
 def latest_weeks(df: pd.DataFrame) -> tuple[Optional[str], Optional[str]]:
@@ -96,7 +183,13 @@ def latest_weeks(df: pd.DataFrame) -> tuple[Optional[str], Optional[str]]:
     return latest, prev
 
 
-def avg_price(df: pd.DataFrame, week: str, city: Optional[str] = None, product: Optional[str] = None, channel: Optional[str] = None) -> Optional[float]:
+def avg_price(
+    df: pd.DataFrame,
+    week: str,
+    city: Optional[str] = None,
+    product: Optional[str] = None,
+    channel: Optional[str] = None,
+) -> Optional[float]:
     q = df[df["week"] == week]
     if city:
         q = q[q["city"] == city]
@@ -121,21 +214,20 @@ def tomato_metrics(df: pd.DataFrame, latest: str, prev: Optional[str]) -> dict:
     finca = avg_price(df, latest, product="Tomate", channel="Finca")
 
     mayorista_prev = avg_price(df, prev, product="Tomate", channel="Mayorista") if prev else None
+    mayorista_var = variation(mayorista, mayorista_prev)
 
     spread = None
     if minorista is not None and finca is not None and finca != 0:
         spread = ((minorista / finca) - 1.0) * 100.0
 
-    mayorista_var = variation(mayorista, mayorista_prev)
-
     alerta = "SIN BASE"
     if mayorista_var is not None:
-      if mayorista_var >= 10:
-          alerta = "ALTA"
-      elif mayorista_var >= 5:
-          alerta = "MEDIA"
-      else:
-          alerta = "NORMAL"
+        if mayorista_var >= 10:
+            alerta = "ALTA"
+        elif mayorista_var >= 5:
+            alerta = "MEDIA"
+        else:
+            alerta = "NORMAL"
 
     city_rows = []
     for city in sorted(df["city"].unique()):
@@ -143,13 +235,10 @@ def tomato_metrics(df: pd.DataFrame, latest: str, prev: Optional[str]) -> dict:
         if cur is None:
             continue
         prv = avg_price(df, prev, city=city, product="Tomate", channel="Mayorista") if prev else None
-        city_rows.append({
-            "city": city,
-            "current": cur,
-            "variation": variation(cur, prv)
-        })
+        city_rows.append({"city": city, "variation": variation(cur, prv)})
 
-    city_rows.sort(key=lambda x: -999999 if x["variation"] is None else -x["variation"])
+    city_rows = [c for c in city_rows if c["variation"] is not None]
+    city_rows.sort(key=lambda x: -x["variation"])
     ciudad_critica = city_rows[0]["city"] if city_rows else None
 
     return {
@@ -174,12 +263,10 @@ def canasta_metrics(df: pd.DataFrame, latest: str, prev: Optional[str]) -> dict:
         if pcur is None:
             continue
         pprv = avg_price(df, prev, product=product) if prev else None
-        products.append({
-            "product": product,
-            "variation": variation(pcur, pprv)
-        })
+        v = variation(pcur, pprv)
+        if v is not None:
+            products.append({"product": product, "variation": v})
 
-    products = [p for p in products if p["variation"] is not None]
     products.sort(key=lambda x: -x["variation"])
     producto_mas_presionado = products[0]["product"] if products else None
 
@@ -189,11 +276,10 @@ def canasta_metrics(df: pd.DataFrame, latest: str, prev: Optional[str]) -> dict:
         if cur_city is None:
             continue
         prev_city = avg_price(df, prev, city=city) if prev else None
-        city_rows.append({
-            "city": city,
-            "variation": variation(cur_city, prev_city)
-        })
-    city_rows = [c for c in city_rows if c["variation"] is not None]
+        v = variation(cur_city, prev_city)
+        if v is not None:
+            city_rows.append({"city": city, "variation": v})
+
     city_rows.sort(key=lambda x: -x["variation"])
     ciudad_critica = city_rows[0]["city"] if city_rows else None
 
@@ -231,7 +317,6 @@ def build_summary(fecha: str, canasta: dict, tomate: dict) -> str:
         parts.append(f"Ciudad crítica del tomate: {tomate['ciudad_critica']}.")
 
     parts.append(f"Alerta tomate: {tomate['alerta']}.")
-
     return " ".join(parts)
 
 
